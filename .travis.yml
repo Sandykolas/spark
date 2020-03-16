@@ -33,11 +33,11 @@ jdk:
   - openjdk8
 
 # 3. Setup cache directory for SBT and Maven.
-#cache:
-#  directories:
-#  - $HOME/.sbt
-#  - $HOME/.m2
-#  - $HOME/.ivy2
+cache:
+  directories:
+  - $HOME/.sbt
+  - $HOME/.m2
+  - $HOME/.ivy2
 
 # 4. Turn off notifications.
 notifications:
@@ -64,7 +64,9 @@ deploy:
 
 # 5. Run maven install before running lint-java.
 install:
-  - build/sbt -Phadoop-2.7 -Pyarn -Pkafka-0-8 -Phive assembly/package test:package -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN -Dsbt.override.build.repos=false
+  - env
+  - cat ~/.sbt/repositories
+  - sbt -Phadoop-2.7 -Pyarn -Pkafka-0-8 -Phive assembly/package test:package -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN -Dsbt.override.build.repos=false
 
 # 6. Run tests
 
