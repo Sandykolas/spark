@@ -109,20 +109,20 @@ matrix:
     - name: sql-A-Z-test
       env: PROFILES="" MODULES="sql/testOnly org.apache.spark.sql.A* org.apache.spark.sql.B* org.apache.spark.sql.C* org.apache.spark.sql.D* org.apache.spark.sql.E* org.apache.spark.sql.F* org.apache.spark.sql.G* org.apache.spark.sql.H* org.apache.spark.sql.I* org.apache.spark.sql.J* org.apache.spark.sql.K* org.apache.spark.sql.L* org.apache.spark.sql.M* org.apache.spark.sql.N* org.apache.spark.sql.O* org.apache.spark.sql.P* org.apache.spark.sql.Q* org.apache.spark.sql.R* org.apache.spark.sql.S* org.apache.spark.sql.T* org.apache.spark.sql.U* org.apache.spark.sql.V* org.apache.spark.sql.W* org.apache.spark.sql.X* org.apache.spark.sql.Y* org.apache.spark.sql.Z*"
     - name: hive
-      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/test org.apache.spark.sql.hive.C* org.apache.spark.sql.hive.E* org.apache.spark.sql.hive.H* org.apache.spark.sql.hive.L* org.apache.spark.sql.hive.M* org.apache.spark.sql.hive.P* org.apache.spark.sql.hive.Q* org.apache.spark.sql.hive.H* org.apache.spark.sql.hive.p* org.apache.spark.sql.hive.S* org.apache.spark.sql.hive.I* org.apache.spark.sql.hive.U*"
+      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/testOnly org.apache.spark.sql.hive.C* org.apache.spark.sql.hive.E* org.apache.spark.sql.hive.H* org.apache.spark.sql.hive.L* org.apache.spark.sql.hive.M* org.apache.spark.sql.hive.P* org.apache.spark.sql.hive.Q* org.apache.spark.sql.hive.H* org.apache.spark.sql.hive.p* org.apache.spark.sql.hive.S* org.apache.spark.sql.hive.I* org.apache.spark.sql.hive.U*"
     - name: hive-catalyst
-      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/test org.apache.spark.sql.catalyst.*"
+      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/testOnly org.apache.spark.sql.catalyst.*"
     - name: hive-client
-      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/test org.apache.spark.sql.hive.client.*"
+      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/testOnly org.apache.spark.sql.hive.client.*"
     - name: hive-orc
-      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/test org.apache.spark.sql.hive.orc.*"
+      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/testOnly org.apache.spark.sql.hive.orc.*"
     - name: hive-execution
-      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/test org.apache.spark.sql.hive.execution.*"
+      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/testOnly org.apache.spark.sql.hive.execution.*"
     - name: hive-sources
-      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/test org.apache.spark.sql.sources.*"
+      env: PROFILES="-Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest" MODULES="hive/testOnly org.apache.spark.sql.sources.*"
 
 script:
-  - ./build/sbt -mem 4096 $PROFILES "$MODULES" -B -V -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN -J-XX:ReservedCodeCacheSize=512M
+  - ./build/sbt -mem 8192 $PROFILES "$MODULES" -B -V -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN -J-XX:ReservedCodeCacheSize=512M
 
 after_success:
   - echo "Travis exited with ${TRAVIS_TEST_RESULT}"
