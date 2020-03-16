@@ -33,11 +33,11 @@ jdk:
   - openjdk8
 
 # 3. Setup cache directory for SBT and Maven.
-cache:
-  directories:
-  - $HOME/.sbt
-  - $HOME/.m2
-  - $HOME/.ivy2
+#cache:
+#  directories:
+#  - $HOME/.sbt
+#  - $HOME/.m2
+#  - $HOME/.ivy2
 
 # 4. Turn off notifications.
 notifications:
