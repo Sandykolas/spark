@@ -23,14 +23,14 @@
 
 # 1. Choose OS (Ubuntu 14.04.3 LTS Server Edition 64bit, ~2 CORE, 7.5GB RAM)
 sudo: required
-dist: trusty
+dist: xenial
 
 # 2. Choose language and target JDKs for parallel builds.
 language: scala
 scala:
   - 2.11.8
 jdk:
-  - openjdk8
+  - oraclejdk8
 
 env:
   - MVN_OPTS="-Xmx2g -XX:ReservedCodeCacheSize=1g -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN"
