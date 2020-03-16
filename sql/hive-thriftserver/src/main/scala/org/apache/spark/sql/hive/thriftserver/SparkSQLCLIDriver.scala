@@ -21,6 +21,7 @@ import java.io._
 import java.util.{ArrayList => JArrayList, Locale}
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 
 import jline.console.ConsoleReader
 import jline.console.history.FileHistory
@@ -45,7 +46,6 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.hive.HiveUtils
 import org.apache.spark.util.ShutdownHookManager
-import scala.collection.mutable.ListBuffer
 
 import sun.misc.{Signal, SignalHandler}
 /**
