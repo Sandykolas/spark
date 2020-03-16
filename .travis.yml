@@ -63,8 +63,8 @@ deploy:
       tags: true
 
 # 5. Run maven install before running lint-java.
-install:
-  - build/sbt -Phadoop-2.7 -Pyarn -Pkafka-0-8 -Phive assembly/package test:package -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN
+# install:
+#  - build/sbt -Phadoop-2.7 -Pyarn -Pkafka-0-8 -Phive assembly/package test:package -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN
 
 # 6. Run tests
 
