@@ -32,6 +32,9 @@ scala:
 jdk:
   - openjdk8
 
+env:
+  - MVN_OPTS="-Xmx2g -XX:ReservedCodeCacheSize=1g -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN"
+
 # 3. Setup cache directory for SBT and Maven.
 cache:
   directories:
@@ -65,8 +68,7 @@ deploy:
 
 # 5. Run maven install before running lint-java.
 install:
-  - build/mvn -Phadoop-2.7 -Dhadoop.version=2.7.3 -Phive -Phive-thriftserver -Pyarn install -DskipTests -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN
-  - sbt -Phadoop-2.7 -Pyarn -Pkafka-0-8 -Phive assembly/package test:package -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN -Dsbt.override.build.repos=true
+  - build/mvn --no-transfer-progress -Pspark-ganglia-lgpl -Phadoop-2.7 -Dhadoop.version=2.7.3 -Phive -Phive-thriftserver -Pyarn install -DskipTests
 
 # 6. Run tests
 
