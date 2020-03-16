@@ -47,6 +47,7 @@ notifications:
 
 before_install:
   - unset SBT_OPTS JVM_OPTS
+  - curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
   - wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.jar
   - wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.pom
 
@@ -64,8 +65,7 @@ deploy:
 
 # 5. Run maven install before running lint-java.
 install:
-  - curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
-  - build/mvn -Phadoop-2.7 -Dhadoop.version=2.7.3 -Phive -Phive-thriftserver -Pyarn install
+  - build/mvn -Phadoop-2.7 -Dhadoop.version=2.7.3 -Phive -Phive-thriftserver -Pyarn install -DskipTests -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN
   - sbt -Phadoop-2.7 -Pyarn -Pkafka-0-8 -Phive assembly/package test:package -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN -Dsbt.override.build.repos=true
 
 # 6. Run tests
