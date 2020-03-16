@@ -64,9 +64,7 @@ deploy:
 
 # 5. Run maven install before running lint-java.
 install:
-  - env
-  - echo "[repositories]\nlocal\naliyun: http://maven.aliyun.com/nexus/content/groups/public/\ntypesafe: http://repo.typesafe.com/typesafe/ivy-releases/, [organization]/[module]/(scala_[scalaVersion]/)(sbt_[sbtVersion]/)[revision]/[type]s/[artifact](-[classifier]).[ext], bootOnly\nsonatype-oss-releases\nmaven-central\nsonatype-oss-snapshots" > ~/.sbt/repositories
-  - cat ~/.sbt/repositories
+  - curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
   - build/mvn -Phadoop-2.7 -Dhadoop.version=2.7.3 -Phive -Phive-thriftserver -Pyarn install
   - sbt -Phadoop-2.7 -Pyarn -Pkafka-0-8 -Phive assembly/package test:package -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN -Dsbt.override.build.repos=true
 
