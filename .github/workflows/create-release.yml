@@ -3,7 +3,7 @@ name: v2.4.5-based
 on:
   push:
     tags:
-      - 'v*'
+      - 'ne-*'
 
 jobs:
   build:
@@ -38,8 +38,7 @@ jobs:
       - name: Make Distribution
         run: |
           export MAVEN_OPTS="-Xmx2g -XX:ReservedCodeCacheSize=512m -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN"
-          mkdir -p ~/.m2
-          ./dev/make-distribution.sh --tgz --name ne-${{ github.ref }} --pip -Pyarn -Pkubernetes -Phive -Phive-thriftserver -Phadoop-2.7 -Dhadoop.version=2.7.4 -Pspark-ganglia-lgpl
+          ./dev/make-distribution.sh --tgz --name ${{ github.tag }} --pip -Pyarn -Pkubernetes -Phive -Phive-thriftserver -Phadoop-2.7
 
       - name: Create Release
         id: create_release
@@ -48,7 +47,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.ref }}
-          release_name: Release spark-2.4.5-bin-ne-${{ github.ref }}
+          release_name: Release spark-2.4.5-bin-${{ github.tag }}
           draft: false
           prerelease: false
       - name: Upload Release Asset
@@ -58,6 +57,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
-          asset_path: ./spark-2.4.5-bin-ne-${{ github.ref }}.tgz
-          asset_name: spark-2.4.5-bin-ne-${{ github.ref }}.tgz
+          asset_path: ./spark-2.4.5-bin-${{ github.tag }}.tgz
+          asset_name: spark-2.4.5-bin-${{ github.tag }}.tgz
           asset_content_type: application/zip
