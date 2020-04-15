@@ -36,10 +36,44 @@ jobs:
           java-version: '1.8'
       - name: Make Distribution
         run: |
-          export MAVEN_OPTS="-Xmx2g -XX:ReservedCodeCacheSize=512m -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN"
+          export MAVEN_OPTS="-Xmx2g -XX:ReservedCodeCacheSize=1g -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN"
+          export BUILDFLAGS="-Pyarn -Pkubernetes -Phive -Phive-thriftserver -Phadoop-2.7 -Dhadoop.version-2.7.4"
           refstr=${{ github.ref }}
           export PNAME=${refstr##*/}
-          ./dev/make-distribution.sh --tgz --name $PNAME -Pyarn -Pkubernetes -Phive -Phive-thriftserver -Phadoop-2.7 --no-transfer-progress
+          export MAVEN_CLI_OPTS="--no-transfer-progress"
+          mkdir -p ~/.m2
+          ./build/mvn $MAVEN_CLI_OPTS -DskipTests $BUILDFLAGS clean package
+          rm -r dist
+          mkdir -p dist/jars
+          GITREV=$(git rev-parse --short HEAD 2>/dev/null || :)
+          echo "NetEase Corp Spark" > "dist/RELEASE"
+          echo "Apache Spark 2.4.5 based" >> "dist/RELEASE"
+          echo "In house tag:\n  $PNAME" >> "dist/RELEASE"
+          echo "Git revision:\n   $GITREV" >> "dist/RELEASE"
+          echo "Created by:\n  Kent Yao" >> "dist/RELEASE"
+          echo "Build flags:\n  $BUILDFLAGS" >> "dist/RELEASE"
+          cp assembly/target/scala*/jars/* dist/jars/
+          mkdir dist/yarn
+          cp common/network-yarn/target/scala*/spark-*-yarn-shuffle.jar dist/yarn
+          mkdir -p dist/kubernetes
+          cp -a resource-managers/kubernetes/docker/src/main/dockerfiles "dist/kubernetes/"
+          cp -a resource-managers/kubernetes/integration-tests/tests "dist/kubernetes/"
+          mkdir -p dist/examples/jars
+          cp examples/target/scala*/jars/* dist/examples/jars
+          mkdir -p dist/examples/src/main
+          cp -r examples/src/main dist/examples/src/
+          cp LICENSE-binary dist/LICENSE
+          cp NOTICE-binary dist/NOTICE
+          cp -r data dist
+          mkdir dist/conf
+          cp conf/*.template dist/conf
+          cp README.md dist
+          cp -r bin dist/
+          cp -r python dist/
+          rm -rf "spark-2.4.5-bin-$PNAME"
+          cp -r dist "spark-2.4.5-bin-$PNAME"
+          tar czf "spark-2.4.5-bin-$PNAME.tgz" -C "spark-2.4.5-bin-$PNAME"
+          rm -rf "spark-2.4.5-bin-$PNAME"
 
       - name: Create Release
         id: create_release
