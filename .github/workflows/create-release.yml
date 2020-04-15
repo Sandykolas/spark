@@ -70,7 +70,7 @@ jobs:
           cp -r bin dist/
           cp -r python dist/
           cp -r dist "spark-2.4.5-bin-$PNAME"
-          tar czf "spark-2.4.5-bin-$PNAME.tgz" -C "spark-2.4.5-bin-$PNAME"
+          tar -czvf "spark-2.4.5-bin-$PNAME.tgz" "spark-2.4.5-bin-$PNAME"
           rm -rf "spark-2.4.5-bin-$PNAME"
 
       - name: Create Release
