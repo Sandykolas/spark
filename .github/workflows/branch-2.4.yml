@@ -3,10 +3,10 @@ name: branch-2.4
 on:
   push:
     branches:
-    - branch-2.4
+    - v2.4.5-based
   pull_request:
     branches:
-    - branch-2.4
+    - v2.4.5-based
 
 jobs:
   build:
