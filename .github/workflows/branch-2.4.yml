@@ -322,7 +322,7 @@ jobs:
       with:
         java-version: '1.8'
     - name: Test hive
-      run: ./build/sbt -mem 4096 -Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTes hive/test
+      run: ./build/sbt -mem 4096 -Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest hive/test
 
   launcher:
     runs-on: ubuntu-latest
