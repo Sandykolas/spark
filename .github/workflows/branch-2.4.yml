@@ -51,8 +51,398 @@ jobs:
         export MAVEN_OPTS="-Xmx2g -XX:ReservedCodeCacheSize=1g -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN"
         export MAVEN_CLI_OPTS="--no-transfer-progress"
         mkdir -p ~/.m2
-        ./build/mvn $MAVEN_CLI_OPTS -Pyarn -Pkubernetes -Phive -Phive-thriftserver -Pscala-${{ matrix.scala }} -P${{ matrix.hadoop }} install
+        ./build/mvn $MAVEN_CLI_OPTS -DskipTests -Pyarn -Pmesos -Pkubernetes -Phive -Phive-thriftserver -Pscala-${{ matrix.scala }} -P${{ matrix.hadoop }} install
         rm -rf ~/.m2/repository/org/apache/spark
+
+  core:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test core
+      run: ./build/sbt -mem 4096 core/test
+
+  network-common:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test network-common
+      run: ./build/sbt -mem 4096 network-common/test
+
+  network-shuffle:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test network-shuffle
+      run: ./build/sbt -mem 4096 network-shuffle/test
+
+  unsafe:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test unsafe
+      run: ./build/sbt -mem 4096 unsafe/test
+
+  repl:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test repl
+      run: ./build/sbt -mem 4096 repl/test
+
+  yarn:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test yarn
+      run: ./build/sbt -mem 4096 -Pyarn yarn/test
+
+  catalyst:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test catalyst
+      run: ./build/sbt -mem 4096 catalyst/test
+
+  sql:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test sql
+      run: ./build/sbt -mem 4096 sql/test
+
+  hive:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test hive
+      run: ./build/sbt -mem 4096 -Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTes hive/test
+
+  launcher:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test launcher
+      run: ./build/sbt -mem 4096 launcher/test
+
+  streaming:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test streaming
+      run: ./build/sbt -mem 4096 streaming/test
+
+  mllib:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@master
+    # We split caches because GitHub Action Cache has a 400MB-size limit.
+    - uses: actions/cache@v1
+      with:
+        path: build
+        key: build-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          build-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/com
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+    - uses: actions/cache@v1
+      with:
+        path: ~/.m2/repository/org
+        key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+        restore-keys: |
+          ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+    - name: Set up JDK 8
+      uses: actions/setup-java@v1
+      with:
+        java-version: '1.8'
+    - name: Test mllib
+      run: ./build/sbt -mem 4096 mllib/test
+
+  graphx:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@master
+      # We split caches because GitHub Action Cache has a 400MB-size limit.
+      - uses: actions/cache@v1
+        with:
+          path: build
+          key: build-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            build-
+      - uses: actions/cache@v1
+        with:
+          path: ~/.m2/repository/com
+          key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-com-
+      - uses: actions/cache@v1
+        with:
+          path: ~/.m2/repository/org
+          key: ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-${{ hashFiles('**/pom.xml') }}
+          restore-keys: |
+            ${{ matrix.scala }}-${{ matrix.hadoop }}-maven-org-
+      - name: Set up JDK 8
+        uses: actions/setup-java@v1
+        with:
+          java-version: '1.8'
+      - name: Test graphx
+        run: ./build/sbt -mem 4096 graphx/test
 
 
   lint:
