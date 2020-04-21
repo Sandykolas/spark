@@ -21,6 +21,7 @@ import java.io._
 import java.util.{ArrayList => JArrayList, Locale}
 
 import scala.collection.JavaConverters._
+import scala.collection.mutable.ListBuffer
 
 import jline.console.ConsoleReader
 import jline.console.history.FileHistory
@@ -37,6 +38,7 @@ import org.apache.hadoop.hive.ql.session.SessionState
 import org.apache.hadoop.security.{Credentials, UserGroupInformation}
 import org.apache.log4j.{Level, Logger}
 import org.apache.thrift.transport.TSocket
+import sun.misc.{Signal, SignalHandler}
 
 import org.apache.spark.SparkConf
 import org.apache.spark.deploy.SparkHadoopUtil
@@ -45,9 +47,7 @@ import org.apache.spark.internal.Logging
 import org.apache.spark.sql.AnalysisException
 import org.apache.spark.sql.hive.HiveUtils
 import org.apache.spark.util.ShutdownHookManager
-import scala.collection.mutable.ListBuffer
 
-import sun.misc.{Signal, SignalHandler}
 /**
  * This code doesn't support remote connections in Hive 1.2+, as the underlying CliDriver
  * has dropped its support.
