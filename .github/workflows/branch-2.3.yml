@@ -82,7 +82,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test core
-        run: ./build/sbt -mem 4096 core/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 core/test
 
   network-common:
     runs-on: ubuntu-16.04
@@ -112,7 +114,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test network-common
-        run: ./build/sbt -mem 4096 network-common/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 network-common/test
 
   network-shuffle:
     runs-on: ubuntu-16.04
@@ -142,7 +146,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test network-shuffle
-        run: ./build/sbt -mem 4096 network-shuffle/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 network-shuffle/test
 
   unsafe:
     runs-on: ubuntu-16.04
@@ -172,7 +178,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test unsafe
-        run: ./build/sbt -mem 4096 unsafe/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 unsafe/test
 
   repl:
     runs-on: ubuntu-16.04
@@ -202,7 +210,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test repl
-        run: ./build/sbt -mem 4096 repl/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 repl/test
 
   yarn:
     runs-on: ubuntu-16.04
@@ -232,7 +242,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test yarn
-        run: ./build/sbt -mem 4096 -Pyarn yarn/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 -Pyarn yarn/test
 
   catalyst:
     runs-on: ubuntu-16.04
@@ -262,7 +274,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test catalyst
-        run: ./build/sbt -mem 4096 catalyst/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 catalyst/test
 
   sql:
     runs-on: ubuntu-16.04
@@ -292,7 +306,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test sql
-        run: ./build/sbt -mem 4096 sql/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 sql/test
 
   hive:
     runs-on: ubuntu-16.04
@@ -322,7 +338,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test hive
-        run: ./build/sbt -mem 4096 -Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest hive/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 -Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest hive/test
 
   launcher:
     runs-on: ubuntu-16.04
@@ -352,7 +370,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test launcher
-        run: ./build/sbt -mem 4096 launcher/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 launcher/test
 
   streaming:
     runs-on: ubuntu-16.04
@@ -382,7 +402,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test streaming
-        run: ./build/sbt -mem 4096 streaming/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 streaming/test
 
   mllib:
     runs-on: ubuntu-16.04
@@ -412,7 +434,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test mllib
-        run: ./build/sbt -mem 4096 mllib/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 mllib/test
 
   graphx:
     runs-on: ubuntu-16.04
@@ -442,7 +466,9 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test graphx
-        run: ./build/sbt -mem 4096 graphx/test
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./build/sbt -mem 4096 graphx/test
 
 
   lint:
@@ -458,7 +484,9 @@ jobs:
           python-version: '3.7'
           architecture: 'x64'
       - name: Scala
-        run: ./dev/lint-scala
+        run: |
+          curl -o $HOME/.m2/settings.xml https://raw.githubusercontent.com/trajano/trajano/master/src/site/resources/settings.xml
+          ./dev/lint-scala
       - name: Java
         run: ./dev/lint-java
       - name: Python
