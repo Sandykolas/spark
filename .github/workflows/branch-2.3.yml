@@ -11,7 +11,7 @@ on:
 jobs:
   build:
 
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     strategy:
       matrix:
         scala: [ '2.11' ]
@@ -55,7 +55,7 @@ jobs:
           rm -rf ~/.m2/repository/org/apache/spark
 
   core:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -87,7 +87,7 @@ jobs:
           ./build/sbt -mem 4096 core/test
 
   network-common:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -119,7 +119,7 @@ jobs:
           ./build/sbt -mem 4096 network-common/test
 
   network-shuffle:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -151,7 +151,7 @@ jobs:
           ./build/sbt -mem 4096 network-shuffle/test
 
   unsafe:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -183,7 +183,7 @@ jobs:
           ./build/sbt -mem 4096 unsafe/test
 
   repl:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -215,7 +215,7 @@ jobs:
           ./build/sbt -mem 4096 repl/test
 
   yarn:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -247,7 +247,7 @@ jobs:
           ./build/sbt -mem 4096 -Pyarn yarn/test
 
   catalyst:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -279,7 +279,7 @@ jobs:
           ./build/sbt -mem 4096 catalyst/test
 
   sql:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -311,7 +311,7 @@ jobs:
           ./build/sbt -mem 4096 sql/test
 
   hive:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -343,7 +343,7 @@ jobs:
           ./build/sbt -mem 4096 -Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest hive/test
 
   launcher:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -375,7 +375,7 @@ jobs:
           ./build/sbt -mem 4096 launcher/test
 
   streaming:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -407,7 +407,7 @@ jobs:
           ./build/sbt -mem 4096 streaming/test
 
   mllib:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -439,7 +439,7 @@ jobs:
           ./build/sbt -mem 4096 mllib/test
 
   graphx:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     steps:
       - uses: actions/checkout@master
       # We split caches because GitHub Action Cache has a 400MB-size limit.
@@ -472,7 +472,7 @@ jobs:
 
 
   lint:
-    runs-on: ubuntu-16.04
+    runs-on: ubuntu-14.04
     name: Linters (Java/Scala/Python), licenses, dependencies
     steps:
       - uses: actions/checkout@master
