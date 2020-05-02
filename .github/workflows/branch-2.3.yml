@@ -202,7 +202,10 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test repl
-        run: ./build/sbt -mem 4096 repl/test
+        run: |
+          wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.jar
+          wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.pom
+          ./build/sbt -mem 4096 repl/test
 
   yarn:
     runs-on: ubuntu-16.04
@@ -262,7 +265,10 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test catalyst
-        run: ./build/sbt -mem 4096 catalyst/test
+        run: |
+          wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.jar
+          wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.pom
+          ./build/sbt -mem 4096 catalyst/test
 
   sql:
     runs-on: ubuntu-16.04
@@ -292,7 +298,10 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test sql
-        run: ./build/sbt -mem 4096 sql/test
+        run: |
+          wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.jar
+          wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.pom
+          ./build/sbt -mem 4096 sql/test
 
   hive:
     runs-on: ubuntu-16.04
@@ -322,7 +331,10 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test hive
-        run: ./build/sbt -mem 4096 -Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest hive/test
+        run: |
+          wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.jar
+          wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.pom
+          ./build/sbt -mem 4096 -Phive -Dtest.exclude.tags=org.apache.spark.tags.ExtendedHiveTest hive/test
 
   launcher:
     runs-on: ubuntu-16.04
@@ -412,7 +424,10 @@ jobs:
         with:
           java-version: '1.8'
       - name: Test mllib
-        run: ./build/sbt -mem 4096 mllib/test
+        run: |
+          wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.jar
+          wget -P $HOME/.m2/repository/yaooqinn/spark-authorizer/2.1.1 http://dl.bintray.com/spark-packages/maven/yaooqinn/spark-authorizer/2.1.1/spark-authorizer-2.1.1.pom
+          ./build/sbt -mem 4096 mllib/test
 
   graphx:
     runs-on: ubuntu-16.04
