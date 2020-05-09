@@ -111,7 +111,7 @@ class NettyBlockTransferServiceSuite
       }
     })
     var createClientCount = 0
-    when(clientFactory.createClient(any(), any())).thenAnswer(new Answer[TransportClient] {
+    when(clientFactory.createClient(any(), any(), any())).thenAnswer(new Answer[TransportClient] {
       override def answer(invocations: InvocationOnMock): TransportClient = {
         createClientCount += 1
         client
