@@ -17,8 +17,10 @@
 
 package org.apache.spark.sql.hive.execution
 
+import java.net.URI
+
 import org.apache.hadoop.conf.Configuration
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{FileSystem, Path}
 import org.apache.hadoop.hive.ql.ErrorMsg
 import org.apache.hadoop.hive.ql.plan.TableDesc
 
@@ -29,8 +31,10 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.execution.SparkPlan
 import org.apache.spark.sql.execution.command.CommandUtils
+import org.apache.spark.sql.hive.HiveExternalCatalog
 import org.apache.spark.sql.hive.HiveShim.{ShimFileSinkDesc => FileSinkDesc}
-import org.apache.spark.sql.hive.client.HiveClientImpl
+import org.apache.spark.sql.hive.client.{HiveClientImpl, HiveVersion}
+import org.apache.spark.sql.hive.client.hive.{v2_0, v2_1}
 
 
 /**
@@ -222,12 +226,21 @@ case class InsertIntoHiveTable(
 
         var doHiveOverwrite = overwrite
 
+        val hiveVersion = externalCatalog.asInstanceOf[HiveExternalCatalog].client.version
+
+        // Since Hive 2.0.0, https://issues.apache.org/jira/browse/HIVE-11940 has been fixed, and
+        // there is no performance issue after that. We should leave the overwrite logic to hive
+        // to avoid bug when the table and partition do not belong to the same FileSystem.
+        val hiveVersDoHiveOverwrite: Set[HiveVersion] = Set(v2_0, v2_1)
+        val canDisable = !hiveVersDoHiveOverwrite.contains(hiveVersion) &&
+          canDisableHiveOverwrite(table.location,
+            oldPart.flatMap(_.storage.locationUri).orNull, hadoopConf)
         if (oldPart.isEmpty || !ifPartitionNotExists) {
           // SPARK-18107: Insert overwrite runs much slower than hive-client.
           // Newer Hive largely improves insert overwrite performance. As Spark uses older Hive
           // version and we may not want to catch up new Hive version every time. We delete the
           // Hive partition first and then load data file into the Hive partition.
-          if (oldPart.nonEmpty && overwrite) {
+          if (oldPart.nonEmpty && overwrite && canDisable) {
             oldPart.get.storage.locationUri.foreach { uri =>
               val partitionPath = new Path(uri)
               val fs = partitionPath.getFileSystem(hadoopConf)
@@ -262,6 +275,42 @@ case class InsertIntoHiveTable(
         tmpLocation.toString, // TODO: URI
         overwrite,
         isSrcLocal = false)
+    }
+  }
+
+  // scalastyle:off line.size.limit
+  /**
+   * If the table location and partition location do not belong to the same [[FileSystem]], We
+   * should not disable hive overwrite. Otherwise, hive will use the [[FileSystem]] instance belong
+   * to the table location to copy files, which will fail [[FileSystem#checkPath]]
+   * see https://github.com/apache/hive/blob/rel/release-2.3.7/ql/src/java/org/apache/hadoop/hive/ql/metadata/Hive.java#L1648-L1659
+   */
+  // scalastyle:on line.size.limit
+  private def canDisableHiveOverwrite(
+      tableLocation: URI,
+      partitionLocation: URI,
+      hadoopConf: Configuration): Boolean = {
+    if (tableLocation == null || partitionLocation == null) return true
+    val partScheme = partitionLocation.getScheme
+    if (partScheme == null) return true // relative path
+
+    val tblScheme = tableLocation.getScheme
+    // authority and scheme are not case sensitive
+    if (partScheme.equalsIgnoreCase(tblScheme)) {
+      val partAuthority = partitionLocation.getAuthority
+      val tblAuthority = tableLocation.getAuthority
+      if (partAuthority != null && tblAuthority != null) {
+        tblAuthority.equalsIgnoreCase(partAuthority)
+      } else {
+        val defaultUri = FileSystem.getDefaultUri(hadoopConf)
+        if (tblAuthority == null) {
+          partAuthority.equalsIgnoreCase(defaultUri.getAuthority)
+        } else {
+          tblAuthority.equalsIgnoreCase(defaultUri.getAuthority)
+        }
+      }
+    } else {
+      false
     }
   }
 }
