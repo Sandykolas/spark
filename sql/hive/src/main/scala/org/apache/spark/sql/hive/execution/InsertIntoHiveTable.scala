@@ -303,10 +303,12 @@ case class InsertIntoHiveTable(
         tblAuthority.equalsIgnoreCase(partAuthority)
       } else {
         val defaultUri = FileSystem.getDefaultUri(hadoopConf)
-        if (tblAuthority == null) {
+        if (partAuthority != null) {
           partAuthority.equalsIgnoreCase(defaultUri.getAuthority)
-        } else {
+        } else if (tblAuthority != null) {
           tblAuthority.equalsIgnoreCase(defaultUri.getAuthority)
+        } else {
+          true
         }
       }
     } else {
