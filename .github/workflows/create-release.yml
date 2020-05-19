@@ -70,9 +70,9 @@ jobs:
           cp -r bin dist/
           cp -r sbin dist/
           cp -r python dist/
-          cp -r dist "spark-2.3.2-bin-$GIT_TAG_NAME"
-          tar -czvf "spark-2.3.2-bin-$GIT_TAG_NAME.tgz" "spark-2.3.2-bin-$GIT_TAG_NAME"
-          rm -rf "spark-2.3.2-bin-$GIT_TAG_NAME"
+          cp -r dist "$GIT_TAG_NAME"
+          tar -czvf "$GIT_TAG_NAME.tgz" "$GIT_TAG_NAME"
+          rm -rf "$GIT_TAG_NAME"
       - name: Create Release
         id: create_release
         uses: actions/create-release@v1
@@ -80,7 +80,7 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           tag_name: ${{ github.ref }}
-          release_name: Release spark-2.3.2-bin-${{ steps.tagName.outputs.tag }}
+          release_name: Release ${{ steps.tagName.outputs.tag }}
           draft: false
           prerelease: false
       - name: Upload Release Asset
@@ -90,6 +90,6 @@ jobs:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         with:
           upload_url: ${{ steps.create_release.outputs.upload_url }} # This pulls from the CREATE RELEASE step above, referencing it's ID to get its outputs object, which include a `upload_url`. See this blog post for more info: https://jasonet.co/posts/new-features-of-github-actions/#passing-data-to-future-steps
-          asset_path: ./spark-2.4.5-bin-${{ steps.tagName.outputs.tag }}.tgz
-          asset_name: spark-2.4.5-bin-${{ steps.tagName.outputs.tag }}.tgz
+          asset_path: ./${{ steps.tagName.outputs.tag }}.tgz
+          asset_name: ${{ steps.tagName.outputs.tag }}.tgz
           asset_content_type: application/zip
