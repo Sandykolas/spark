@@ -39,10 +39,9 @@ jobs:
       - name: Make Distribution
         run: |
           export MAVEN_OPTS="-Xmx2g -XX:ReservedCodeCacheSize=1g -Dorg.slf4j.simpleLogger.defaultLogLevel=WARN"
-          export BUILDFLAGS="-Pyarn -Pkubernetes -Phive -Phive-thriftserver -Phadoop-2.7 -Dhadoop.version-2.7.4"
-          export MAVEN_CLI_OPTS="--no-transfer-progress"
+          export BUILDFLAGS="-Pyarn -Phive -Phive-thriftserver -Phadoop-2.7 -Dhadoop.version-2.7.4"
           mkdir -p ~/.m2
-          ./build/mvn $MAVEN_CLI_OPTS -DskipTests $BUILDFLAGS clean package
+          ./build/mvn -DskipTests $BUILDFLAGS clean package
           mkdir -p dist/jars
           GITREV=$(git rev-parse --short HEAD 2>/dev/null || :)
           echo "NetEase Corp Spark" > "dist/RELEASE"
@@ -54,9 +53,6 @@ jobs:
           cp assembly/target/scala*/jars/* dist/jars/
           mkdir dist/yarn
           cp common/network-yarn/target/scala*/spark-*-yarn-shuffle.jar dist/yarn
-          mkdir -p dist/kubernetes
-          cp -a resource-managers/kubernetes/docker/src/main/dockerfiles "dist/kubernetes/"
-          cp -a resource-managers/kubernetes/integration-tests/tests "dist/kubernetes/"
           mkdir -p dist/examples/jars
           cp examples/target/scala*/jars/* dist/examples/jars
           mkdir -p dist/examples/src/main
