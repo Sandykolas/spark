@@ -15,14 +15,14 @@
  * limitations under the License.
  */
 
-package org.apache.spark.sql.catalyst.csv
+package org.apache.spark.scheduler
 
-import org.apache.spark.sql.catalyst.{StructFilters, StructFiltersSuite}
-import org.apache.spark.sql.sources
-import org.apache.spark.sql.types.StructType
-
-class CSVFiltersSuite extends StructFiltersSuite {
-  override def createFilters(filters: Seq[sources.Filter], schema: StructType): StructFilters = {
-    new CSVFilters(filters, schema)
-  }
-}
+/**
+ * Provides more detail when an executor is being decommissioned.
+ * @param message Human readable reason for why the decommissioning is happening.
+ * @param isHostDecommissioned Whether the host (aka the `node` or `worker` in other places) is
+ *                             being decommissioned too. Used to infer if the shuffle data might
+ *                             be lost even if the external shuffle service is enabled.
+ */
+private[spark]
+case class ExecutorDecommissionInfo(message: String, isHostDecommissioned: Boolean)
