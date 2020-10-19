@@ -21,7 +21,7 @@ import org.apache.spark.status.AppStatusStore
 import org.apache.spark.ui.{SparkUI, SparkUITab}
 
 private[ui] class NeExecutorsTab(parent: SparkUI, store: AppStatusStore)
-  extends SparkUITab(parent, "NetEase Executors") {
+  extends SparkUITab(parent, "NetEaseExecutors") {
 
   init()
 
