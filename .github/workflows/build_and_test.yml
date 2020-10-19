@@ -3,10 +3,10 @@ name: Build and test
 on:
   push:
     branches:
-    - branch-2.4
+    - v2.4.7-based
   pull_request:
     branches:
-    - branch-2.4
+    - v2.4.7-based
 
 jobs:
   # Build: build Spark and run the tests for specified modules.

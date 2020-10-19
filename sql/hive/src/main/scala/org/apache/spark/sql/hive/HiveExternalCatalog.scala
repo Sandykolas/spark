@@ -212,7 +212,11 @@ private[spark] class HiveExternalCatalog(conf: SparkConf, hadoopConf: Configurat
   }
 
   override def databaseExists(db: String): Boolean = withClient {
-    client.databaseExists(db)
+    try {
+      client.databaseExists(db)
+    } catch {
+      case ae: AnalysisException if ae.getMessage.contains("AccessControlException") => true
+    }
   }
 
   override def listDatabases(): Seq[String] = withClient {
