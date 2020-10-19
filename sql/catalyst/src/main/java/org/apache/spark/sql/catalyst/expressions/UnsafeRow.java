@@ -37,7 +37,6 @@ import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.array.ByteArrayMethods;
 import org.apache.spark.unsafe.bitset.BitSetMethods;
 import org.apache.spark.unsafe.hash.Murmur3_x86_32;
-import org.apache.spark.unsafe.memory.MemoryBlock;
 import org.apache.spark.unsafe.types.CalendarInterval;
 import org.apache.spark.unsafe.types.UTF8String;
 
@@ -96,6 +95,10 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
   }
 
   public static boolean isFixedLength(DataType dt) {
+    if (dt instanceof UserDefinedType) {
+      return isFixedLength(((UserDefinedType) dt).sqlType());
+    }
+
     if (dt instanceof DecimalType) {
       return ((DecimalType) dt).precision() <= Decimal.MAX_LONG_DIGITS();
     } else {
@@ -104,6 +107,10 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
   }
 
   public static boolean isMutable(DataType dt) {
+    if (dt instanceof UserDefinedType) {
+      return isMutable(((UserDefinedType) dt).sqlType());
+    }
+
     return mutableFieldTypes.contains(dt) || dt instanceof DecimalType;
   }
 
@@ -417,8 +424,7 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
     final long offsetAndSize = getLong(ordinal);
     final int offset = (int) (offsetAndSize >> 32);
     final int size = (int) offsetAndSize;
-    MemoryBlock mb = MemoryBlock.allocateFromObject(baseObject, baseOffset + offset, size);
-    return new UTF8String(mb);
+    return UTF8String.fromAddress(baseObject, baseOffset + offset, size);
   }
 
   @Override
@@ -588,14 +594,7 @@ public final class UnsafeRow extends InternalRow implements Externalizable, Kryo
    * Returns the underlying bytes for this UnsafeRow.
    */
   public byte[] getBytes() {
-    if (baseObject instanceof byte[] && baseOffset == Platform.BYTE_ARRAY_OFFSET
-      && (((byte[]) baseObject).length == sizeInBytes)) {
-      return (byte[]) baseObject;
-    } else {
-      byte[] bytes = new byte[sizeInBytes];
-      Platform.copyMemory(baseObject, baseOffset, bytes, Platform.BYTE_ARRAY_OFFSET, sizeInBytes);
-      return bytes;
-    }
+    return UnsafeDataUtils.getBytes(baseObject, baseOffset, sizeInBytes);
   }
 
   // This is for debugging

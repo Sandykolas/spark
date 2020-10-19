@@ -29,6 +29,7 @@ import org.apache.spark.sql.catalyst.rules.Rule
 import org.apache.spark.sql.catalyst.util.DateTimeUtils
 import org.apache.spark.sql.execution.command.{DescribeTableCommand, ExecutedCommandExec, ShowTablesCommand}
 import org.apache.spark.sql.execution.exchange.{EnsureRequirements, ReuseExchange}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types.{BinaryType, DateType, DecimalType, TimestampType, _}
 import org.apache.spark.util.Utils
 
@@ -77,7 +78,13 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
   lazy val executedPlan: SparkPlan = prepareForExecution(sparkPlan)
 
   /** Internal version of the RDD. Avoids copies and has no schema */
-  lazy val toRdd: RDD[InternalRow] = executedPlan.execute()
+  lazy val toRdd: RDD[InternalRow] = {
+    if (sparkSession.sessionState.conf.getConf(SQLConf.USE_CONF_ON_RDD_OPERATION)) {
+      new SQLExecutionRDD(executedPlan.execute(), sparkSession.sessionState.conf)
+    } else {
+      executedPlan.execute()
+    }
+  }
 
   /**
    * Prepares a planned [[SparkPlan]] for execution by inserting shuffle operations and internal
@@ -89,7 +96,6 @@ class QueryExecution(val sparkSession: SparkSession, val logical: LogicalPlan) {
 
   /** A sequence of rules that will be applied in order to the physical plan before execution. */
   protected def preparations: Seq[Rule[SparkPlan]] = Seq(
-    python.ExtractPythonUDFs,
     PlanSubqueries(sparkSession),
     EnsureRequirements(sparkSession.sessionState.conf),
     CollapseCodegenStages(sparkSession.sessionState.conf),

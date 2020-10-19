@@ -32,6 +32,8 @@ import org.apache.spark.sql.catalyst.plans.{Cross, Inner}
 import org.apache.spark.sql.catalyst.plans.logical._
 import org.apache.spark.sql.catalyst.plans.physical.{HashPartitioning, Partitioning,
   RangePartitioning, RoundRobinPartitioning}
+import org.apache.spark.sql.catalyst.util._
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.types._
 
 
@@ -312,22 +314,24 @@ class AnalysisSuite extends AnalysisTest with Matchers {
     }
 
     // non-primitive parameters do not need special null handling
-    val udf1 = ScalaUDF((s: String) => "x", StringType, string :: Nil)
+    val udf1 = ScalaUDF((s: String) => "x", StringType, string :: Nil, true :: Nil)
     val expected1 = udf1
     checkUDF(udf1, expected1)
 
     // only primitive parameter needs special null handling
-    val udf2 = ScalaUDF((s: String, d: Double) => "x", StringType, string :: double :: Nil)
+    val udf2 = ScalaUDF((s: String, d: Double) => "x", StringType, string :: double :: Nil,
+      true :: false :: Nil)
     val expected2 =
-      If(IsNull(double), nullResult, udf2.copy(children = string :: KnownNotNull(double) :: Nil))
+      If(IsNull(double), nullResult, udf2.copy(inputsNullSafe = true :: true :: Nil))
     checkUDF(udf2, expected2)
 
     // special null handling should apply to all primitive parameters
-    val udf3 = ScalaUDF((s: Short, d: Double) => "x", StringType, short :: double :: Nil)
+    val udf3 = ScalaUDF((s: Short, d: Double) => "x", StringType, short :: double :: Nil,
+      false :: false :: Nil)
     val expected3 = If(
       IsNull(short) || IsNull(double),
       nullResult,
-      udf3.copy(children = KnownNotNull(short) :: KnownNotNull(double) :: Nil))
+      udf3.copy(inputsNullSafe = true :: true :: Nil))
     checkUDF(udf3, expected3)
 
     // we can skip special null handling for primitive parameters that are not nullable
@@ -335,19 +339,20 @@ class AnalysisSuite extends AnalysisTest with Matchers {
     val udf4 = ScalaUDF(
       (s: Short, d: Double) => "x",
       StringType,
-      short :: double.withNullability(false) :: Nil)
+      short :: double.withNullability(false) :: Nil,
+      false :: false :: Nil)
     val expected4 = If(
       IsNull(short),
       nullResult,
-      udf4.copy(children = KnownNotNull(short) :: double.withNullability(false) :: Nil))
+      udf4.copy(inputsNullSafe = true :: true :: Nil))
     // checkUDF(udf4, expected4)
   }
 
   test("SPARK-24891 Fix HandleNullInputsForUDF rule") {
     val a = testRelation.output(0)
     val func = (x: Int, y: Int) => x + y
-    val udf1 = ScalaUDF(func, IntegerType, a :: a :: Nil)
-    val udf2 = ScalaUDF(func, IntegerType, a :: udf1 :: Nil)
+    val udf1 = ScalaUDF(func, IntegerType, a :: a :: Nil, false :: false :: Nil)
+    val udf2 = ScalaUDF(func, IntegerType, a :: udf1 :: Nil, false :: false :: Nil)
     val plan = Project(Alias(udf2, "")() :: Nil, testRelation)
     comparePlans(plan.analyze, plan.analyze.analyze)
   }
@@ -582,5 +587,74 @@ class AnalysisSuite extends AnalysisTest with Matchers {
     assertAnalysisSuccess(
       listRelation.select(MultiAlias(MultiAlias(
         PosExplode('list), Seq("first_pos", "first_val")), Seq("second_pos", "second_val"))))
+  }
+
+  test("SPARK-24151: CURRENT_DATE, CURRENT_TIMESTAMP should be case insensitive") {
+    withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+      val input = Project(Seq(
+        UnresolvedAttribute("current_date"),
+        UnresolvedAttribute("CURRENT_DATE"),
+        UnresolvedAttribute("CURRENT_TIMESTAMP"),
+        UnresolvedAttribute("current_timestamp")), testRelation)
+      val expected = Project(Seq(
+        Alias(CurrentDate(), toPrettySQL(CurrentDate()))(),
+        Alias(CurrentDate(), toPrettySQL(CurrentDate()))(),
+        Alias(CurrentTimestamp(), toPrettySQL(CurrentTimestamp()))(),
+        Alias(CurrentTimestamp(), toPrettySQL(CurrentTimestamp()))()), testRelation).analyze
+      checkAnalysis(input, expected)
+    }
+  }
+
+  test("SPARK-32131: Fix wrong column index when we have more than two columns" +
+    " during union and set operations" ) {
+    val firstTable = LocalRelation(
+      AttributeReference("a", StringType)(),
+      AttributeReference("b", DoubleType)(),
+      AttributeReference("c", IntegerType)(),
+      AttributeReference("d", FloatType)())
+
+    val secondTable = LocalRelation(
+      AttributeReference("a", StringType)(),
+      AttributeReference("b", TimestampType)(),
+      AttributeReference("c", IntegerType)(),
+      AttributeReference("d", FloatType)())
+
+    val thirdTable = LocalRelation(
+      AttributeReference("a", StringType)(),
+      AttributeReference("b", DoubleType)(),
+      AttributeReference("c", TimestampType)(),
+      AttributeReference("d", FloatType)())
+
+    val fourthTable = LocalRelation(
+      AttributeReference("a", StringType)(),
+      AttributeReference("b", DoubleType)(),
+      AttributeReference("c", IntegerType)(),
+      AttributeReference("d", TimestampType)())
+
+    val r1 = Union(firstTable, secondTable)
+    val r2 = Union(firstTable, thirdTable)
+    val r3 = Union(firstTable, fourthTable)
+    val r4 = Except(firstTable, secondTable, isAll = false)
+    val r5 = Intersect(firstTable, secondTable, isAll = false)
+
+    assertAnalysisError(r1,
+      Seq("Union can only be performed on tables with the compatible column types. " +
+        "timestamp <> double at the second column of the second table"))
+
+    assertAnalysisError(r2,
+      Seq("Union can only be performed on tables with the compatible column types. " +
+        "timestamp <> int at the third column of the second table"))
+
+    assertAnalysisError(r3,
+      Seq("Union can only be performed on tables with the compatible column types. " +
+        "timestamp <> float at the 4th column of the second table"))
+
+    assertAnalysisError(r4,
+      Seq("Except can only be performed on tables with the compatible column types. " +
+        "timestamp <> double at the second column of the second table"))
+
+    assertAnalysisError(r5,
+      Seq("Intersect can only be performed on tables with the compatible column types. " +
+        "timestamp <> double at the second column of the second table"))
   }
 }

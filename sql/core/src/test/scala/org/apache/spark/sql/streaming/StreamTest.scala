@@ -87,7 +87,7 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
   protected val defaultUseV2Sink = false
 
   /** How long to wait for an active stream to catch up when checking a result. */
-  val streamingTimeout = 10.seconds
+  val streamingTimeout = 60.seconds
 
   /** A trait for actions that can be performed while testing a streaming DataFrame. */
   trait StreamAction
@@ -686,7 +686,7 @@ trait StreamTest extends QueryTest with SharedSQLContext with TimeLimits with Be
               plan
                 .collect {
                   case r: StreamingExecutionRelation => r.source
-                  case r: StreamingDataSourceV2Relation => r.readSupport
+                  case r: StreamingDataSourceV2Relation => r.reader
                 }
                 .zipWithIndex
                 .find(_._1 == source)

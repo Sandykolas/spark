@@ -12,14 +12,14 @@ redirect_from: "building-with-maven.html"
 ## Apache Maven
 
 The Maven-based build is the build of reference for Apache Spark.
-Building Spark using Maven requires Maven 3.3.9 or newer and Java 8+.
+Building Spark using Maven requires Maven 3.5.4 and Java 8.
 Note that support for Java 7 was removed as of Spark 2.2.0.
 
 ### Setting up Maven's Memory Usage
 
 You'll need to configure Maven to use more memory than usual by setting `MAVEN_OPTS`:
 
-    export MAVEN_OPTS="-Xmx2g -XX:ReservedCodeCacheSize=512m"
+    export MAVEN_OPTS="-Xmx2g -XX:ReservedCodeCacheSize=1g"
 
 (The `ReservedCodeCacheSize` setting is optional but recommended.)
 If you don't add these parameters to `MAVEN_OPTS`, you may see errors and warnings like the following:
@@ -58,7 +58,7 @@ This will build Spark distribution along with Python pip and R packages. For mor
 You can specify the exact version of Hadoop to compile against through the `hadoop.version` property. 
 If unset, Spark will build against Hadoop 2.6.X by default.
 
-You can enable the `yarn` profile and optionally set the `yarn.version` property if it is different 
+You can enable the `yarn` profile and optionally set the `yarn.version` property if it is different
 from `hadoop.version`.
 
 Examples:
@@ -67,7 +67,7 @@ Examples:
     ./build/mvn -Pyarn -DskipTests clean package
 
     # Apache Hadoop 2.7.X and later
-    ./build/mvn -Pyarn -Phadoop-2.7 -Dhadoop.version=2.7.7 -DskipTests clean package
+    ./build/mvn -Pyarn -Phadoop-2.7 -Dhadoop.version=2.7.3 -DskipTests clean package
 
 ## Building With Hive and JDBC Support
 
@@ -236,7 +236,7 @@ The run-tests script also can be limited to a specific Python version or a speci
 
 To run the SparkR tests you will need to install the [knitr](https://cran.r-project.org/package=knitr), [rmarkdown](https://cran.r-project.org/package=rmarkdown), [testthat](https://cran.r-project.org/package=testthat), [e1071](https://cran.r-project.org/package=e1071) and [survival](https://cran.r-project.org/package=survival) packages first:
 
-    R -e "install.packages(c('knitr', 'rmarkdown', 'testthat', 'e1071', 'survival'), repos='http://cran.us.r-project.org')"
+    Rscript -e "install.packages(c('knitr', 'rmarkdown', 'devtools', 'testthat', 'e1071', 'survival'), repos='https://cloud.r-project.org/')"
 
 You can run just the SparkR tests using the command:
 
@@ -255,3 +255,19 @@ On Linux, this can be done by `sudo service docker start`.
 or
 
     ./build/sbt docker-integration-tests/test
+
+## Change Scala Version
+
+To build Spark using another supported Scala version, please change the major Scala version using (e.g. 2.12):
+
+    ./dev/change-scala-version.sh 2.12
+
+For Maven, please enable the profile (e.g. 2.12):
+
+    ./build/mvn -Pscala-2.12 compile
+
+For SBT, specify a complete scala version using (e.g. 2.12.6):
+
+    ./build/sbt -Dscala.version=2.12.6
+
+Otherwise, the sbt-pom-reader plugin will use the `scala.version` specified in the spark-parent pom.

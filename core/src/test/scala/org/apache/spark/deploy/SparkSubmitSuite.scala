@@ -72,22 +72,31 @@ trait TestPrematureExit {
     mainObject.printStream = printStream
 
     @volatile var exitedCleanly = false
+    val original = mainObject.exitFn
     mainObject.exitFn = (_) => exitedCleanly = true
-
-    val thread = new Thread {
-      override def run() = try {
-        mainObject.main(input)
-      } catch {
-        // If exceptions occur after the "exit" has happened, fine to ignore them.
-        // These represent code paths not reachable during normal execution.
-        case e: Exception => if (!exitedCleanly) throw e
+    try {
+      @volatile var exception: Exception = null
+      val thread = new Thread {
+        override def run() = try {
+          mainObject.main(input)
+        } catch {
+          // Capture the exception to check whether the exception contains searchString or not
+          case e: Exception => exception = e
+        }
       }
-    }
-    thread.start()
-    thread.join()
-    val joined = printStream.lineBuffer.mkString("\n")
-    if (!joined.contains(searchString)) {
-      fail(s"Search string '$searchString' not found in $joined")
+      thread.start()
+      thread.join()
+      if (exitedCleanly) {
+        val joined = printStream.lineBuffer.mkString("\n")
+        assert(joined.contains(searchString))
+      } else {
+        assert(exception != null)
+        if (!exception.getMessage.contains(searchString)) {
+          throw exception
+        }
+      }
+    } finally {
+      mainObject.exitFn = original
     }
   }
 }
@@ -577,7 +586,7 @@ class SparkSubmitSuite
   }
 
   // TODO(SPARK-9603): Building a package is flaky on Jenkins Maven builds.
-  // See https://gist.github.com/shivaram/3a2fecce60768a603dac for a error log
+  // See https://gist.github.com/shivaram/3a2fecce60768a603dac for an error log
   ignore("correctly builds R packages included in a jar with --packages") {
     assume(RUtils.isRInstalled, "R isn't installed on this machine.")
     assume(RUtils.isSparkRInstalled, "SparkR is not installed in this build.")
@@ -957,6 +966,25 @@ class SparkSubmitSuite
     }
   }
 
+  test("remove copies of application jar from classpath") {
+    val fs = File.separator
+    val sparkConf = new SparkConf(false)
+    val hadoopConf = new Configuration()
+    val secMgr = new SecurityManager(sparkConf)
+
+    val appJarName = "myApp.jar"
+    val jar1Name = "myJar1.jar"
+    val jar2Name = "myJar2.jar"
+    val userJar = s"file:/path${fs}to${fs}app${fs}jar$fs$appJarName"
+    val jars = s"file:/$jar1Name,file:/$appJarName,file:/$jar2Name"
+
+    val resolvedJars = DependencyUtils
+      .resolveAndDownloadJars(jars, userJar, sparkConf, hadoopConf, secMgr)
+
+    assert(!resolvedJars.contains(appJarName))
+    assert(resolvedJars.contains(jar1Name) && resolvedJars.contains(jar2Name))
+  }
+
   test("Avoid re-upload remote resources in yarn client mode") {
     val hadoopConf = new Configuration()
     updateConfWithFakeS3Fs(hadoopConf)
@@ -1143,6 +1171,53 @@ class SparkSubmitSuite
 
     conf1.get(PY_FILES.key) should be (s"s3a://${pyFile.getAbsolutePath}")
     conf1.get("spark.submit.pyFiles") should (startWith("/"))
+  }
+
+  test("handles natural line delimiters in --properties-file and --conf uniformly") {
+    val delimKey = "spark.my.delimiter."
+    val LF = "\n"
+    val CR = "\r"
+
+    val lineFeedFromCommandLine = s"${delimKey}lineFeedFromCommandLine" -> LF
+    val leadingDelimKeyFromFile = s"${delimKey}leadingDelimKeyFromFile" -> s"${LF}blah"
+    val trailingDelimKeyFromFile = s"${delimKey}trailingDelimKeyFromFile" -> s"blah${CR}"
+    val infixDelimFromFile = s"${delimKey}infixDelimFromFile" -> s"${CR}blah${LF}"
+    val nonDelimSpaceFromFile = s"${delimKey}nonDelimSpaceFromFile" -> " blah\f"
+
+    val testProps = Seq(leadingDelimKeyFromFile, trailingDelimKeyFromFile, infixDelimFromFile,
+      nonDelimSpaceFromFile)
+
+    val props = new java.util.Properties()
+    val propsFile = File.createTempFile("test-spark-conf", ".properties",
+      Utils.createTempDir())
+    val propsOutputStream = new FileOutputStream(propsFile)
+    try {
+      testProps.foreach { case (k, v) => props.put(k, v) }
+      props.store(propsOutputStream, "test whitespace")
+    } finally {
+      propsOutputStream.close()
+    }
+
+    val clArgs = Seq(
+      "--class", "org.SomeClass",
+      "--conf", s"${lineFeedFromCommandLine._1}=${lineFeedFromCommandLine._2}",
+      "--conf", "spark.master=yarn",
+      "--properties-file", propsFile.getPath,
+      "thejar.jar")
+
+    val appArgs = new SparkSubmitArguments(clArgs)
+    val (_, _, conf, _) = submit.prepareSubmitEnvironment(appArgs)
+
+    Seq(
+      lineFeedFromCommandLine,
+      leadingDelimKeyFromFile,
+      trailingDelimKeyFromFile,
+      infixDelimFromFile
+    ).foreach { case (k, v) =>
+      conf.get(k) should be (v)
+    }
+
+    conf.get(nonDelimSpaceFromFile._1) should be ("blah")
   }
 }
 

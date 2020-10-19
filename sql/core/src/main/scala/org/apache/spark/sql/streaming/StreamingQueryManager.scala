@@ -20,6 +20,7 @@ package org.apache.spark.sql.streaming
 import java.util.UUID
 import javax.annotation.concurrent.GuardedBy
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable
 
 import org.apache.hadoop.fs.Path
@@ -34,7 +35,7 @@ import org.apache.spark.sql.execution.streaming.continuous.{ContinuousExecution,
 import org.apache.spark.sql.execution.streaming.state.StateStoreCoordinatorRef
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.internal.StaticSQLConf.STREAMING_QUERY_LISTENERS
-import org.apache.spark.sql.sources.v2.StreamingWriteSupportProvider
+import org.apache.spark.sql.sources.v2.StreamWriteSupport
 import org.apache.spark.util.{Clock, SystemClock, Utils}
 
 /**
@@ -196,6 +197,11 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
     listenerBus.removeListener(listener)
   }
 
+  /** Only exposed for testing. */
+  private[sql] def listListeners(): Array[StreamingQueryListener] = {
+    listenerBus.listeners.asScala.toArray
+  }
+
   /** Post a listener event */
   private[sql] def postListenerEvent(event: StreamingQueryListener.Event): Unit = {
     listenerBus.post(event)
@@ -256,7 +262,7 @@ class StreamingQueryManager private[sql] (sparkSession: SparkSession) extends Lo
     }
 
     (sink, trigger) match {
-      case (v2Sink: StreamingWriteSupportProvider, trigger: ContinuousTrigger) =>
+      case (v2Sink: StreamWriteSupport, trigger: ContinuousTrigger) =>
         if (sparkSession.sessionState.conf.isUnsupportedOperationCheckEnabled) {
           UnsupportedOperationChecker.checkForContinuous(analyzedPlan, outputMode)
         }

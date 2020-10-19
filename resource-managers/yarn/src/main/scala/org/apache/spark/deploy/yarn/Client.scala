@@ -48,6 +48,7 @@ import org.apache.hadoop.yarn.exceptions.ApplicationNotFoundException
 import org.apache.hadoop.yarn.util.Records
 
 import org.apache.spark.{SecurityManager, SparkConf, SparkException}
+import org.apache.spark.api.python.PythonUtils
 import org.apache.spark.deploy.{SparkApplication, SparkHadoopUtil}
 import org.apache.spark.deploy.yarn.config._
 import org.apache.spark.deploy.yarn.security.YARNHadoopDelegationTokenManager
@@ -90,6 +91,13 @@ private[spark] class Client(
   private val executorMemory = sparkConf.get(EXECUTOR_MEMORY)
   private val executorMemoryOverhead = sparkConf.get(EXECUTOR_MEMORY_OVERHEAD).getOrElse(
     math.max((MEMORY_OVERHEAD_FACTOR * executorMemory).toLong, MEMORY_OVERHEAD_MIN)).toInt
+
+  private val isPython = sparkConf.get(IS_PYTHON_APP)
+  private val pysparkWorkerMemory: Int = if (isPython) {
+    sparkConf.get(PYSPARK_EXECUTOR_MEMORY).map(_.toInt).getOrElse(0)
+  } else {
+    0
+  }
 
   private val distCacheMgr = new ClientDistributedCacheManager()
 
@@ -333,18 +341,19 @@ private[spark] class Client(
     val maxMem = newAppResponse.getMaximumResourceCapability().getMemory()
     logInfo("Verifying our application has not requested more than the maximum " +
       s"memory capability of the cluster ($maxMem MB per container)")
-    val executorMem = executorMemory + executorMemoryOverhead
+    val executorMem = executorMemory + executorMemoryOverhead + pysparkWorkerMemory
     if (executorMem > maxMem) {
-      throw new IllegalArgumentException(s"Required executor memory ($executorMemory" +
-        s"+$executorMemoryOverhead MB) is above the max threshold ($maxMem MB) of this cluster! " +
-        "Please check the values of 'yarn.scheduler.maximum-allocation-mb' and/or " +
-        "'yarn.nodemanager.resource.memory-mb'.")
+      throw new IllegalArgumentException(s"Required executor memory ($executorMemory), overhead " +
+        s"($executorMemoryOverhead MB), and PySpark memory ($pysparkWorkerMemory MB) is above " +
+        s"the max threshold ($maxMem MB) of this cluster! Please check the values of " +
+        s"'yarn.scheduler.maximum-allocation-mb' and/or 'yarn.nodemanager.resource.memory-mb'.")
     }
     val amMem = amMemory + amMemoryOverhead
     if (amMem > maxMem) {
       throw new IllegalArgumentException(s"Required AM memory ($amMemory" +
         s"+$amMemoryOverhead MB) is above the max threshold ($maxMem MB) of this cluster! " +
-        "Please increase the value of 'yarn.scheduler.maximum-allocation-mb'.")
+        "Please check the values of 'yarn.scheduler.maximum-allocation-mb' and/or " +
+        "'yarn.nodemanager.resource.memory-mb'.")
     }
     logInfo("Will allocate AM container, with %d MB memory including %d MB overhead".format(
       amMem,
@@ -1157,7 +1166,7 @@ private[spark] class Client(
         val pyArchivesFile = new File(pyLibPath, "pyspark.zip")
         require(pyArchivesFile.exists(),
           s"$pyArchivesFile not found; cannot run pyspark application in YARN mode.")
-        val py4jFile = new File(pyLibPath, "py4j-0.10.7-src.zip")
+        val py4jFile = new File(pyLibPath, PythonUtils.PY4J_ZIP_NAME)
         require(py4jFile.exists(),
           s"$py4jFile not found; cannot run pyspark application in YARN mode.")
         Seq(pyArchivesFile.getAbsolutePath(), py4jFile.getAbsolutePath())
@@ -1302,7 +1311,10 @@ private object Client extends Logging {
       }
     }
 
-    populateHadoopClasspath(conf, env)
+    if (sparkConf.get(POPULATE_HADOOP_CLASSPATH)) {
+      populateHadoopClasspath(conf, env)
+    }
+
     sys.env.get(ENV_DIST_CLASSPATH).foreach { cp =>
       addClasspathEntry(getClusterPath(sparkConf, cp), env)
     }

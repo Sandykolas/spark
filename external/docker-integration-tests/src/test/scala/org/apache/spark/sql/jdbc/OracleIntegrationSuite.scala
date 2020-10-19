@@ -442,6 +442,12 @@ class OracleIntegrationSuite extends DockerJDBCIntegrationSuite with SharedSQLCo
       .option("lowerBound", "2018-07-06")
       .option("upperBound", "2018-07-20")
       .option("numPartitions", 3)
+      // oracle.jdbc.mapDateToTimestamp defaults to true. If this flag is not disabled, column d
+      // (Oracle DATE) will be resolved as Catalyst Timestamp, which will fail bound evaluation of
+      // the partition column. E.g. 2018-07-06 cannot be evaluated as Timestamp, and the error
+      // message says: Timestamp format must be yyyy-mm-dd hh:mm:ss[.fffffffff].
+      .option("oracle.jdbc.mapDateToTimestamp", "false")
+      .option("sessionInitStatement", "ALTER SESSION SET NLS_DATE_FORMAT = 'YYYY-MM-DD'")
       .load()
 
     df1.logicalPlan match {
@@ -462,6 +468,9 @@ class OracleIntegrationSuite extends DockerJDBCIntegrationSuite with SharedSQLCo
       .option("lowerBound", "2018-07-04 03:30:00.0")
       .option("upperBound", "2018-07-27 14:11:05.0")
       .option("numPartitions", 2)
+      .option("oracle.jdbc.mapDateToTimestamp", "false")
+      .option("sessionInitStatement",
+        "ALTER SESSION SET NLS_TIMESTAMP_FORMAT = 'YYYY-MM-DD HH24:MI:SS.FF'")
       .load()
 
     df2.logicalPlan match {
@@ -472,5 +481,33 @@ class OracleIntegrationSuite extends DockerJDBCIntegrationSuite with SharedSQLCo
           """"T" >= '2018-07-15 20:50:32.5'"""))
     }
     assert(df2.collect.toSet === expectedResult)
+  }
+
+  test("query JDBC option") {
+    val expectedResult = Set(
+      (1, "1991-11-09", "1996-01-01 01:23:45")
+    ).map { case (id, date, timestamp) =>
+      Row(BigDecimal.valueOf(id), Date.valueOf(date), Timestamp.valueOf(timestamp))
+    }
+
+    val query = "SELECT id, d, t FROM datetime WHERE id = 1"
+    // query option to pass on the query string.
+    val df = spark.read.format("jdbc")
+      .option("url", jdbcUrl)
+      .option("query", query)
+      .option("oracle.jdbc.mapDateToTimestamp", "false")
+      .load()
+    assert(df.collect.toSet === expectedResult)
+
+    // query option in the create table path.
+    sql(
+      s"""
+         |CREATE OR REPLACE TEMPORARY VIEW queryOption
+         |USING org.apache.spark.sql.jdbc
+         |OPTIONS (url '$jdbcUrl',
+         |   query '$query',
+         |   oracle.jdbc.mapDateToTimestamp false)
+       """.stripMargin.replaceAll("\n", " "))
+    assert(sql("select id, d, t from queryOption").collect.toSet == expectedResult)
   }
 }

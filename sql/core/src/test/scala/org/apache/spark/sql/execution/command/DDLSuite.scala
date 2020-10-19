@@ -17,11 +17,12 @@
 
 package org.apache.spark.sql.execution.command
 
-import java.io.File
+import java.io.{File, PrintWriter}
 import java.net.URI
 import java.util.Locale
 
-import org.apache.hadoop.fs.Path
+import org.apache.hadoop.fs.{Path, RawLocalFileSystem}
+import org.apache.hadoop.fs.permission.{AclEntry, AclEntryScope, AclEntryType, AclStatus, FsAction, FsPermission}
 import org.scalatest.BeforeAndAfterEach
 
 import org.apache.spark.sql.{AnalysisException, QueryTest, Row, SaveMode}
@@ -52,23 +53,24 @@ class InMemoryCatalogedDDLSuite extends DDLSuite with SharedSQLContext with Befo
   protected override def generateTable(
       catalog: SessionCatalog,
       name: TableIdentifier,
-      isDataSource: Boolean = true): CatalogTable = {
+      isDataSource: Boolean = true,
+      partitionCols: Seq[String] = Seq("a", "b")): CatalogTable = {
     val storage =
       CatalogStorageFormat.empty.copy(locationUri = Some(catalog.defaultTablePath(name)))
     val metadata = new MetadataBuilder()
       .putString("key", "value")
       .build()
+    val schema = new StructType()
+      .add("col1", "int", nullable = true, metadata = metadata)
+      .add("col2", "string")
     CatalogTable(
       identifier = name,
       tableType = CatalogTableType.EXTERNAL,
       storage = storage,
-      schema = new StructType()
-        .add("col1", "int", nullable = true, metadata = metadata)
-        .add("col2", "string")
-        .add("a", "int")
-        .add("b", "int"),
+      schema = schema.copy(
+        fields = schema.fields ++ partitionCols.map(StructField(_, IntegerType))),
       provider = Some("parquet"),
-      partitionColumnNames = Seq("a", "b"),
+      partitionColumnNames = partitionCols,
       createTime = 0L,
       createVersion = org.apache.spark.SPARK_VERSION,
       tracksPartitionsInCatalog = true)
@@ -176,7 +178,8 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
   protected def generateTable(
       catalog: SessionCatalog,
       name: TableIdentifier,
-      isDataSource: Boolean = true): CatalogTable
+      isDataSource: Boolean = true,
+      partitionCols: Seq[String] = Seq("a", "b")): CatalogTable
 
   private val escapedIdentifier = "`(.+)`".r
 
@@ -228,8 +231,10 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
   private def createTable(
       catalog: SessionCatalog,
       name: TableIdentifier,
-      isDataSource: Boolean = true): Unit = {
-    catalog.createTable(generateTable(catalog, name, isDataSource), ignoreIfExists = false)
+      isDataSource: Boolean = true,
+      partitionCols: Seq[String] = Seq("a", "b")): Unit = {
+    catalog.createTable(
+      generateTable(catalog, name, isDataSource, partitionCols), ignoreIfExists = false)
   }
 
   private def createTablePartition(
@@ -955,7 +960,7 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
     df.write.insertInto("students")
     spark.catalog.cacheTable("students")
     checkAnswer(spark.table("students"), df)
-    assume(spark.catalog.isCached("students"), "bad test: table was not cached in the first place")
+    assert(spark.catalog.isCached("students"), "bad test: table was not cached in the first place")
     sql("ALTER TABLE students RENAME TO teachers")
     sql("CREATE TABLE students (age INT, name STRING) USING parquet")
     // Now we have both students and teachers.
@@ -1131,7 +1136,7 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
   }
 
   test("alter table: recover partition (parallel)") {
-    withSQLConf("spark.rdd.parallelListingThreshold" -> "1") {
+    withSQLConf("spark.rdd.parallelListingThreshold" -> "0") {
       testRecoverPartitions()
     }
   }
@@ -1144,23 +1149,32 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
     }
 
     val tableIdent = TableIdentifier("tab1")
-    createTable(catalog, tableIdent)
-    val part1 = Map("a" -> "1", "b" -> "5")
+    createTable(catalog, tableIdent, partitionCols = Seq("a", "b", "c"))
+    val part1 = Map("a" -> "1", "b" -> "5", "c" -> "19")
     createTablePartition(catalog, part1, tableIdent)
     assert(catalog.listPartitions(tableIdent).map(_.spec).toSet == Set(part1))
 
-    val part2 = Map("a" -> "2", "b" -> "6")
+    val part2 = Map("a" -> "2", "b" -> "6", "c" -> "31")
     val root = new Path(catalog.getTableMetadata(tableIdent).location)
     val fs = root.getFileSystem(spark.sessionState.newHadoopConf())
     // valid
-    fs.mkdirs(new Path(new Path(root, "a=1"), "b=5"))
-    fs.createNewFile(new Path(new Path(root, "a=1/b=5"), "a.csv"))  // file
-    fs.createNewFile(new Path(new Path(root, "a=1/b=5"), "_SUCCESS"))  // file
-    fs.mkdirs(new Path(new Path(root, "A=2"), "B=6"))
-    fs.createNewFile(new Path(new Path(root, "A=2/B=6"), "b.csv"))  // file
-    fs.createNewFile(new Path(new Path(root, "A=2/B=6"), "c.csv"))  // file
-    fs.createNewFile(new Path(new Path(root, "A=2/B=6"), ".hiddenFile"))  // file
-    fs.mkdirs(new Path(new Path(root, "A=2/B=6"), "_temporary"))
+    fs.mkdirs(new Path(new Path(new Path(root, "a=1"), "b=5"), "c=19"))
+    fs.createNewFile(new Path(new Path(root, "a=1/b=5/c=19"), "a.csv"))  // file
+    fs.createNewFile(new Path(new Path(root, "a=1/b=5/c=19"), "_SUCCESS"))  // file
+
+    fs.mkdirs(new Path(new Path(new Path(root, "A=2"), "B=6"), "C=31"))
+    fs.createNewFile(new Path(new Path(root, "A=2/B=6/C=31"), "b.csv"))  // file
+    fs.createNewFile(new Path(new Path(root, "A=2/B=6/C=31"), "c.csv"))  // file
+    fs.createNewFile(new Path(new Path(root, "A=2/B=6/C=31"), ".hiddenFile"))  // file
+    fs.mkdirs(new Path(new Path(root, "A=2/B=6/C=31"), "_temporary"))
+
+    val parts = (10 to 100).map { a =>
+      val part = Map("a" -> a.toString, "b" -> "5", "c" -> "42")
+      fs.mkdirs(new Path(new Path(new Path(root, s"a=$a"), "b=5"), "c=42"))
+      fs.createNewFile(new Path(new Path(root, s"a=$a/b=5/c=42"), "a.csv"))  // file
+      createTablePartition(catalog, part, tableIdent)
+      part
+    }
 
     // invalid
     fs.mkdirs(new Path(new Path(root, "a"), "b"))  // bad name
@@ -1174,7 +1188,7 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
     try {
       sql("ALTER TABLE tab1 RECOVER PARTITIONS")
       assert(catalog.listPartitions(tableIdent).map(_.spec).toSet ==
-        Set(part1, part2))
+        Set(part1, part2) ++ parts)
       if (!isUsingHiveMetastore) {
         assert(catalog.getPartition(tableIdent, part1).parameters("numFiles") == "1")
         assert(catalog.getPartition(tableIdent, part2).parameters("numFiles") == "2")
@@ -1771,7 +1785,7 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
           """Extended Usage:
             |    Examples:
             |      > SELECT 3 ^ 5;
-            |       2
+            |       6
             |  """.stripMargin) ::
         Row("Function: ^") ::
         Row("Usage: expr1 ^ expr2 - Returns the result of " +
@@ -1870,7 +1884,7 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
     Seq("json", "parquet").foreach { format =>
       withTable("rectangles") {
         data.write.format(format).saveAsTable("rectangles")
-        assume(spark.table("rectangles").collect().nonEmpty,
+        assert(spark.table("rectangles").collect().nonEmpty,
           "bad test; table was empty to begin with")
 
         sql("TRUNCATE TABLE rectangles")
@@ -1919,6 +1933,100 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
         sql("TRUNCATE TABLE partTable PARTITION (unknown=1)")
       }
       assert(e.message.contains("unknown is not a valid partition column"))
+    }
+  }
+
+  test("SPARK-30312: truncate table - keep acl/permission") {
+    import testImplicits._
+    val ignorePermissionAcl = Seq(true, false)
+
+    ignorePermissionAcl.foreach { ignore =>
+      withSQLConf(
+        "fs.file.impl" -> classOf[FakeLocalFsFileSystem].getName,
+        "fs.file.impl.disable.cache" -> "true",
+        SQLConf.TRUNCATE_TABLE_IGNORE_PERMISSION_ACL.key -> ignore.toString) {
+        withTable("tab1") {
+          sql("CREATE TABLE tab1 (col INT) USING parquet")
+          sql("INSERT INTO tab1 SELECT 1")
+          checkAnswer(spark.table("tab1"), Row(1))
+
+          val tablePath = new Path(spark.sessionState.catalog
+            .getTableMetadata(TableIdentifier("tab1")).storage.locationUri.get)
+
+          val hadoopConf = spark.sessionState.newHadoopConf()
+          val fs = tablePath.getFileSystem(hadoopConf)
+          val fileStatus = fs.getFileStatus(tablePath);
+
+          fs.setPermission(tablePath, new FsPermission("777"))
+          assert(fileStatus.getPermission().toString() == "rwxrwxrwx")
+
+          // Set ACL to table path.
+          val customAcl = new java.util.ArrayList[AclEntry]()
+          customAcl.add(new AclEntry.Builder()
+            .setName("test")
+            .setType(AclEntryType.USER)
+            .setScope(AclEntryScope.ACCESS)
+            .setPermission(FsAction.READ).build())
+          fs.setAcl(tablePath, customAcl)
+          assert(fs.getAclStatus(tablePath).getEntries().get(0) == customAcl.get(0))
+
+          sql("TRUNCATE TABLE tab1")
+          assert(spark.table("tab1").collect().isEmpty)
+
+          val fileStatus2 = fs.getFileStatus(tablePath)
+          if (ignore) {
+            assert(fileStatus2.getPermission().toString() != "rwxrwxrwx")
+          } else {
+            assert(fileStatus2.getPermission().toString() == "rwxrwxrwx")
+          }
+          val aclEntries = fs.getAclStatus(tablePath).getEntries()
+          if (ignore) {
+            assert(aclEntries.size() == 0)
+          } else {
+            assert(aclEntries.size() == 4)
+            assert(aclEntries.get(0) == customAcl.get(0))
+
+            // Setting ACLs will also set user/group/other permissions
+            // as ACL entries.
+            val user = new AclEntry.Builder()
+              .setType(AclEntryType.USER)
+              .setScope(AclEntryScope.ACCESS)
+              .setPermission(FsAction.ALL).build()
+            val group = new AclEntry.Builder()
+              .setType(AclEntryType.GROUP)
+              .setScope(AclEntryScope.ACCESS)
+              .setPermission(FsAction.ALL).build()
+            val other = new AclEntry.Builder()
+              .setType(AclEntryType.OTHER)
+              .setScope(AclEntryScope.ACCESS)
+              .setPermission(FsAction.ALL).build()
+            assert(aclEntries.get(1) == user)
+            assert(aclEntries.get(2) == group)
+            assert(aclEntries.get(3) == other)
+          }
+        }
+      }
+    }
+  }
+
+  test("SPARK-31163: acl/permission should handle non-existed path when truncating table") {
+    withSQLConf(SQLConf.TRUNCATE_TABLE_IGNORE_PERMISSION_ACL.key -> "false") {
+      withTable("tab1") {
+        sql("CREATE TABLE tab1 (col1 STRING, col2 INT) USING parquet PARTITIONED BY (col2)")
+        sql("INSERT INTO tab1 SELECT 'one', 1")
+        checkAnswer(spark.table("tab1"), Row("one", 1))
+        val part = spark.sessionState.catalog.listPartitions(TableIdentifier("tab1")).head
+        val path = new File(part.location.getPath)
+        sql("TRUNCATE TABLE tab1")
+        // simulate incomplete/unsuccessful truncate
+        assert(path.exists())
+        path.delete()
+        assert(!path.exists())
+        // execute without java.io.FileNotFoundException
+        sql("TRUNCATE TABLE tab1")
+        // partition path should be re-created
+        assert(path.exists())
+      }
     }
   }
 
@@ -2701,5 +2809,63 @@ abstract class DDLSuite extends QueryTest with SQLTestUtils {
         }
       }
     }
+  }
+
+  test("Refresh table before drop database cascade") {
+    withTempDir { tempDir =>
+      val file1 = new File(tempDir + "/first.csv")
+      val writer1 = new PrintWriter(file1)
+      writer1.write("first")
+      writer1.close()
+
+      val file2 = new File(tempDir + "/second.csv")
+      val writer2 = new PrintWriter(file2)
+      writer2.write("second")
+      writer2.close()
+
+      withDatabase("foo") {
+        withTable("foo.first") {
+          sql("CREATE DATABASE foo")
+          sql(
+            s"""CREATE TABLE foo.first (id STRING)
+               |USING csv OPTIONS (path='${file1.toURI}')
+             """.stripMargin)
+          sql("SELECT * FROM foo.first")
+          checkAnswer(spark.table("foo.first"), Row("first"))
+
+          // Dropping the database and again creating same table with different path
+          sql("DROP DATABASE foo CASCADE")
+          sql("CREATE DATABASE foo")
+          sql(
+            s"""CREATE TABLE foo.first (id STRING)
+               |USING csv OPTIONS (path='${file2.toURI}')
+             """.stripMargin)
+          sql("SELECT * FROM foo.first")
+          checkAnswer(spark.table("foo.first"), Row("second"))
+        }
+      }
+    }
+  }
+}
+
+object FakeLocalFsFileSystem {
+  var aclStatus = new AclStatus.Builder().build()
+}
+
+// A fake test local filesystem used to test ACL. It keeps a ACL status. If deletes
+// a path of this filesystem, it will clean up the ACL status. Note that for test purpose,
+// it has only one ACL status for all paths.
+class FakeLocalFsFileSystem extends RawLocalFileSystem {
+  import FakeLocalFsFileSystem._
+
+  override def delete(f: Path, recursive: Boolean): Boolean = {
+    aclStatus = new AclStatus.Builder().build()
+    super.delete(f, recursive)
+  }
+
+  override def getAclStatus(path: Path): AclStatus = aclStatus
+
+  override def setAcl(path: Path, aclSpec: java.util.List[AclEntry]): Unit = {
+    aclStatus = new AclStatus.Builder().addEntries(aclSpec).build()
   }
 }

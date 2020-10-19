@@ -73,7 +73,7 @@ class StateOperatorProgress private[sql](
  * a trigger. Each event relates to processing done for a single trigger of the streaming
  * query. Events are emitted even when no new data is available to be processed.
  *
- * @param id An unique query id that persists across restarts. See `StreamingQuery.id()`.
+ * @param id A unique query id that persists across restarts. See `StreamingQuery.id()`.
  * @param runId A query id that is unique for every start/restart. See `StreamingQuery.runId()`.
  * @param name User-specified name of the query, null if not specified.
  * @param timestamp Beginning time of the trigger in ISO8601 format, i.e. UTC timestamps.
@@ -172,27 +172,7 @@ class SourceProgress protected[sql](
   val endOffset: String,
   val numInputRows: Long,
   val inputRowsPerSecond: Double,
-  val processedRowsPerSecond: Double,
-  val customMetrics: String) extends Serializable {
-
-  /** SourceProgress without custom metrics. */
-  protected[sql] def this(
-      description: String,
-      startOffset: String,
-      endOffset: String,
-      numInputRows: Long,
-      inputRowsPerSecond: Double,
-      processedRowsPerSecond: Double) {
-
-    this(
-      description,
-      startOffset,
-      endOffset,
-      numInputRows,
-      inputRowsPerSecond,
-      processedRowsPerSecond,
-      null)
-  }
+  val processedRowsPerSecond: Double) extends Serializable {
 
   /** The compact JSON representation of this progress. */
   def json: String = compact(render(jsonValue))
@@ -207,18 +187,12 @@ class SourceProgress protected[sql](
       if (value.isNaN || value.isInfinity) JNothing else JDouble(value)
     }
 
-    val jsonVal = ("description" -> JString(description)) ~
+    ("description" -> JString(description)) ~
       ("startOffset" -> tryParse(startOffset)) ~
       ("endOffset" -> tryParse(endOffset)) ~
       ("numInputRows" -> JInt(numInputRows)) ~
       ("inputRowsPerSecond" -> safeDoubleToJValue(inputRowsPerSecond)) ~
       ("processedRowsPerSecond" -> safeDoubleToJValue(processedRowsPerSecond))
-
-    if (customMetrics != null) {
-      jsonVal ~ ("customMetrics" -> parse(customMetrics))
-    } else {
-      jsonVal
-    }
   }
 
   private def tryParse(json: String) = try {
@@ -237,13 +211,7 @@ class SourceProgress protected[sql](
  */
 @InterfaceStability.Evolving
 class SinkProgress protected[sql](
-    val description: String,
-    val customMetrics: String) extends Serializable {
-
-  /** SinkProgress without custom metrics. */
-  protected[sql] def this(description: String) {
-    this(description, null)
-  }
+    val description: String) extends Serializable {
 
   /** The compact JSON representation of this progress. */
   def json: String = compact(render(jsonValue))
@@ -254,12 +222,6 @@ class SinkProgress protected[sql](
   override def toString: String = prettyJson
 
   private[sql] def jsonValue: JValue = {
-    val jsonVal = ("description" -> JString(description))
-
-    if (customMetrics != null) {
-      jsonVal ~ ("customMetrics" -> parse(customMetrics))
-    } else {
-      jsonVal
-    }
+    ("description" -> JString(description))
   }
 }

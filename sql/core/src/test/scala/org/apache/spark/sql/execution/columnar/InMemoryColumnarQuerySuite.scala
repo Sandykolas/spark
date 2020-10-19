@@ -488,6 +488,12 @@ class InMemoryColumnarQuerySuite extends QueryTest with SharedSQLContext {
     }
   }
 
+  test("SPARK-25727 - otherCopyArgs in InMemoryRelation does not include outputOrdering") {
+    val data = Seq(100).toDF("count").cache()
+    val json = data.queryExecution.optimizedPlan.toJSON
+    assert(json.contains("outputOrdering") && json.contains("statsOfPlanToCache"))
+  }
+
   test("SPARK-22673: InMemoryRelation should utilize existing stats of the plan to be cached") {
     // This test case depends on the size of parquet in statistics.
     withSQLConf(
@@ -503,7 +509,7 @@ class InMemoryColumnarQuerySuite extends QueryTest with SharedSQLContext {
             case plan: InMemoryRelation => plan
           }.head
           // InMemoryRelation's stats is file size before the underlying RDD is materialized
-          assert(inMemoryRelation.computeStats().sizeInBytes === 800)
+          assert(inMemoryRelation.computeStats().sizeInBytes === 868)
 
           // InMemoryRelation's stats is updated after materializing RDD
           dfFromFile.collect()
@@ -516,7 +522,7 @@ class InMemoryColumnarQuerySuite extends QueryTest with SharedSQLContext {
 
           // Even CBO enabled, InMemoryRelation's stats keeps as the file size before table's stats
           // is calculated
-          assert(inMemoryRelation2.computeStats().sizeInBytes === 800)
+          assert(inMemoryRelation2.computeStats().sizeInBytes === 868)
 
           // InMemoryRelation's stats should be updated after calculating stats of the table
           // clear cache to simulate a fresh environment

@@ -611,7 +611,7 @@ class DatasetSuite extends QueryTest with SharedSQLContext {
     ).toDF("id", "stringData")
     val sampleDF = df.sample(false, 0.7, 50)
     // After sampling, sampleDF doesn't contain id=1.
-    assert(!sampleDF.select("id").collect.contains(1))
+    assert(!sampleDF.select("id").as[Int].collect.contains(1))
     // simpleUdf should not encounter id=1.
     checkAnswer(sampleDF.select(simpleUdf($"id")), List.fill(sampleDF.count.toInt)(Row(1)))
   }
@@ -966,6 +966,55 @@ class DatasetSuite extends QueryTest with SharedSQLContext {
         |+--------+
         |""".stripMargin
 
+    checkShowString(ds, expected)
+  }
+
+  test("SPARK-25108 Fix the show method to display the full width character alignment problem") {
+    // scalastyle:off nonascii
+    val df = Seq(
+      (0, null, 1),
+      (0, "", 1),
+      (0, "ab c", 1),
+      (0, "1098", 1),
+      (0, "mø", 1),
+      (0, "γύρ", 1),
+      (0, "pê", 1),
+      (0, "ー", 1),
+      (0, "测", 1),
+      (0, "か", 1),
+      (0, "걸", 1),
+      (0, "à", 1),
+      (0, "焼", 1),
+      (0, "羍む", 1),
+      (0, "뺭ᾘ", 1),
+      (0, "\u0967\u0968\u0969", 1)
+    ).toDF("b", "a", "c")
+    // scalastyle:on nonascii
+    val ds = df.as[ClassData]
+    val expected =
+      // scalastyle:off nonascii
+      """+---+----+---+
+        ||  b|   a|  c|
+        |+---+----+---+
+        ||  0|null|  1|
+        ||  0|    |  1|
+        ||  0|ab c|  1|
+        ||  0|1098|  1|
+        ||  0|  mø|  1|
+        ||  0| γύρ|  1|
+        ||  0|  pê|  1|
+        ||  0|  ー|  1|
+        ||  0|  测|  1|
+        ||  0|  か|  1|
+        ||  0|  걸|  1|
+        ||  0|   à|  1|
+        ||  0|  焼|  1|
+        ||  0|羍む|  1|
+        ||  0| 뺭ᾘ|  1|
+        ||  0| १२३|  1|
+        |+---+----+---+
+        |""".stripMargin
+    // scalastyle:on nonascii
     checkShowString(ds, expected)
   }
 
@@ -1499,14 +1548,43 @@ class DatasetSuite extends QueryTest with SharedSQLContext {
       Seq(Row("Amsterdam")))
   }
 
-  test("SPARK-23034 show rdd names in RDD scan nodes") {
-    val rddWithName = spark.sparkContext.parallelize(SingleData(1) :: Nil).setName("testRdd")
-    val df = spark.createDataFrame(rddWithName)
-    val output = new java.io.ByteArrayOutputStream()
-    Console.withOut(output) {
-      df.explain(extended = false)
+  test("SPARK-26233: serializer should enforce decimal precision and scale") {
+    val s = StructType(Seq(StructField("a", StringType), StructField("b", DecimalType(38, 8))))
+    val encoder = RowEncoder(s)
+    implicit val uEnc = encoder
+    val df = spark.range(2).map(l => Row(l.toString, BigDecimal.valueOf(l + 0.1111)))
+    checkAnswer(df.groupBy(col("a")).agg(first(col("b"))),
+      Seq(Row("0", BigDecimal.valueOf(0.1111)), Row("1", BigDecimal.valueOf(1.1111))))
+  }
+
+  test("SPARK-26366: return nulls which are not filtered in except") {
+    val inputDF = sqlContext.createDataFrame(
+      sparkContext.parallelize(Seq(Row("0", "a"), Row("1", null))),
+      StructType(Seq(
+        StructField("a", StringType, nullable = true),
+        StructField("b", StringType, nullable = true))))
+
+    val exceptDF = inputDF.filter(col("a").isin("0") or col("b") > "c")
+    checkAnswer(inputDF.except(exceptDF), Seq(Row("1", null)))
+  }
+
+  test("SPARK-26706: Fix Cast.mayTruncate for bytes") {
+    val thrownException = intercept[AnalysisException] {
+      spark.range(Long.MaxValue - 10, Long.MaxValue).as[Byte]
+        .map(b => b - 1)
+        .collect()
     }
-    assert(output.toString.contains("Scan testRdd"))
+    assert(thrownException.message.contains("Cannot up cast `id` from bigint to tinyint"))
+  }
+
+  test("SPARK-31854: Invoke in MapElementsExec should not propagate null") {
+    Seq("true", "false").foreach { wholeStage =>
+      withSQLConf(SQLConf.WHOLESTAGE_CODEGEN_ENABLED.key -> wholeStage) {
+        val ds = Seq(1.asInstanceOf[Integer], null.asInstanceOf[Integer]).toDS()
+        val expectedAnswer = Seq[(Integer, Integer)]((1, 1), (null, null))
+        checkDataset(ds.map(v => (v, v)), expectedAnswer: _*)
+      }
+    }
   }
 }
 

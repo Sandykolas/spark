@@ -25,9 +25,12 @@ import warnings
 if sys.version < "3":
     from itertools import imap as map
 
+if sys.version >= '3':
+    basestring = str
+
 from pyspark import since, SparkContext
 from pyspark.rdd import ignore_unicode_prefix, PythonEvalType
-from pyspark.sql.column import Column, _to_java_column, _to_seq
+from pyspark.sql.column import Column, _to_java_column, _to_seq, _create_column_from_literal
 from pyspark.sql.dataframe import DataFrame
 from pyspark.sql.types import StringType, DataType
 # Keep UserDefinedFunction import for backwards compatible import; moved in SPARK-22409
@@ -171,14 +174,14 @@ _collect_set_doc = """
     """
 _functions_1_6 = {
     # unary math functions
-    'stddev': 'Aggregate function: returns the unbiased sample standard deviation of' +
-              ' the expression in a group.',
+    'stddev': 'Aggregate function: alias for stddev_samp.',
     'stddev_samp': 'Aggregate function: returns the unbiased sample standard deviation of' +
                    ' the expression in a group.',
     'stddev_pop': 'Aggregate function: returns population standard deviation of' +
                   ' the expression in a group.',
-    'variance': 'Aggregate function: returns the population variance of the values in a group.',
-    'var_samp': 'Aggregate function: returns the unbiased variance of the values in a group.',
+    'variance': 'Aggregate function: alias for var_samp.',
+    'var_samp': 'Aggregate function: returns the unbiased sample variance of' +
+                ' the values in a group.',
     'var_pop':  'Aggregate function: returns the population variance of the values in a group.',
     'skewness': 'Aggregate function: returns the skewness of the values in a group.',
     'kurtosis': 'Aggregate function: returns the kurtosis of the values in a group.',
@@ -283,7 +286,8 @@ def approxCountDistinct(col, rsd=None):
 
 @since(2.1)
 def approx_count_distinct(col, rsd=None):
-    """Aggregate function: returns a new :class:`Column` for approximate distinct count of column `col`.
+    """Aggregate function: returns a new :class:`Column` for approximate distinct count of
+    column `col`.
 
     :param rsd: maximum estimation error allowed (default = 0.05). For rsd < 0.01, it is more
         efficient to use :func:`countDistinct`
@@ -346,7 +350,8 @@ def coalesce(*cols):
 
 @since(1.6)
 def corr(col1, col2):
-    """Returns a new :class:`Column` for the Pearson Correlation Coefficient for ``col1`` and ``col2``.
+    """Returns a new :class:`Column` for the Pearson Correlation Coefficient for ``col1``
+    and ``col2``.
 
     >>> a = range(20)
     >>> b = [2 * x for x in range(20)]
@@ -548,7 +553,7 @@ def nanvl(col1, col2):
 @since(1.4)
 def rand(seed=None):
     """Generates a random column with independent and identically distributed (i.i.d.) samples
-    from U[0.0, 1.0].
+    uniformly distributed in [0.0, 1.0).
 
     .. note:: The function is non-deterministic in general case.
 
@@ -851,36 +856,6 @@ def ntile(n):
     """
     sc = SparkContext._active_spark_context
     return Column(sc._jvm.functions.ntile(int(n)))
-
-
-@since(2.4)
-def unboundedPreceding():
-    """
-    Window function: returns the special frame boundary that represents the first row
-    in the window partition.
-    """
-    sc = SparkContext._active_spark_context
-    return Column(sc._jvm.functions.unboundedPreceding())
-
-
-@since(2.4)
-def unboundedFollowing():
-    """
-    Window function: returns the special frame boundary that represents the last row
-    in the window partition.
-    """
-    sc = SparkContext._active_spark_context
-    return Column(sc._jvm.functions.unboundedFollowing())
-
-
-@since(2.4)
-def currentRow():
-    """
-    Window function: returns the special frame boundary that represents the current row
-    in the window partition.
-    """
-    sc = SparkContext._active_spark_context
-    return Column(sc._jvm.functions.currentRow())
 
 
 # ---------------------- Date/Timestamp functions ------------------------------
@@ -1281,9 +1256,18 @@ def unix_timestamp(timestamp=None, format='yyyy-MM-dd HH:mm:ss'):
 @since(1.5)
 def from_utc_timestamp(timestamp, tz):
     """
-    Given a timestamp like '2017-07-14 02:40:00.0', interprets it as a time in UTC, and renders
-    that time as a timestamp in the given time zone. For example, 'GMT+1' would yield
-    '2017-07-14 03:40:00.0'.
+    This is a common function for databases supporting TIMESTAMP WITHOUT TIMEZONE. This function
+    takes a timestamp which is timezone-agnostic, and interprets it as a timestamp in UTC, and
+    renders that timestamp as a timestamp in the given time zone.
+
+    However, timestamp in Spark represents number of microseconds from the Unix epoch, which is not
+    timezone-agnostic. So in Spark this function just shift the timestamp value from UTC timezone to
+    the given timezone.
+
+    This function may return confusing result if the input is a string with timezone, e.g.
+    '2018-03-13T06:18:23+00:00'. The reason is that, Spark firstly cast the string to timestamp
+    according to the timezone in the string, and finally display the result by converting the
+    timestamp to string according to the session local timezone.
 
     :param timestamp: the column that contains timestamps
     :param tz: a string that has the ID of timezone, e.g. "GMT", "America/Los_Angeles", etc
@@ -1306,9 +1290,18 @@ def from_utc_timestamp(timestamp, tz):
 @since(1.5)
 def to_utc_timestamp(timestamp, tz):
     """
-    Given a timestamp like '2017-07-14 02:40:00.0', interprets it as a time in the given time
-    zone, and renders that time as a timestamp in UTC. For example, 'GMT+1' would yield
-    '2017-07-14 01:40:00.0'.
+    This is a common function for databases supporting TIMESTAMP WITHOUT TIMEZONE. This function
+    takes a timestamp which is timezone-agnostic, and interprets it as a timestamp in the given
+    timezone, and renders that timestamp as a timestamp in UTC.
+
+    However, timestamp in Spark represents number of microseconds from the Unix epoch, which is not
+    timezone-agnostic. So in Spark this function just shift the timestamp value from the given
+    timezone to UTC timezone.
+
+    This function may return confusing result if the input is a string with timezone, e.g.
+    '2018-03-13T06:18:23+00:00'. The reason is that, Spark firstly cast the string to timestamp
+    according to the timezone in the string, and finally display the result by converting the
+    timestamp to string according to the session local timezone.
 
     :param timestamp: the column that contains timestamps
     :param tz: a string that has the ID of timezone, e.g. "GMT", "America/Los_Angeles", etc
@@ -1528,8 +1521,9 @@ def format_string(format, *cols):
     """
     Formats the arguments in printf-style and returns the result as a string column.
 
-    :param col: the column name of the numeric value to be formatted
-    :param d: the N decimal places
+    :param format: string that can contain embedded format tags and used as result column's value
+    :param cols: list of column names (string) or list of :class:`Column` expressions to
+        be used in formatting
 
     >>> df = spark.createDataFrame([(5, "hello")], ['a', 'b'])
     >>> df.select(format_string('%d %s', df.a, df.b).alias('v')).collect()
@@ -1688,14 +1682,14 @@ def split(str, pattern):
 @ignore_unicode_prefix
 @since(1.5)
 def regexp_extract(str, pattern, idx):
-    """Extract a specific group matched by a Java regex, from the specified string column.
+    r"""Extract a specific group matched by a Java regex, from the specified string column.
     If the regex did not match, or the specified group did not match, an empty string is returned.
 
     >>> df = spark.createDataFrame([('100-200',)], ['str'])
-    >>> df.select(regexp_extract('str', '(\d+)-(\d+)', 1).alias('d')).collect()
+    >>> df.select(regexp_extract('str', r'(\d+)-(\d+)', 1).alias('d')).collect()
     [Row(d=u'100')]
     >>> df = spark.createDataFrame([('foo',)], ['str'])
-    >>> df.select(regexp_extract('str', '(\d+)', 1).alias('d')).collect()
+    >>> df.select(regexp_extract('str', r'(\d+)', 1).alias('d')).collect()
     [Row(d=u'')]
     >>> df = spark.createDataFrame([('aaaac',)], ['str'])
     >>> df.select(regexp_extract('str', '(a+)(b)?(c)', 2).alias('d')).collect()
@@ -1709,10 +1703,10 @@ def regexp_extract(str, pattern, idx):
 @ignore_unicode_prefix
 @since(1.5)
 def regexp_replace(str, pattern, replacement):
-    """Replace all substrings of the specified string value that match regexp with rep.
+    r"""Replace all substrings of the specified string value that match regexp with rep.
 
     >>> df = spark.createDataFrame([('100-200',)], ['str'])
-    >>> df.select(regexp_replace('str', '(\\d+)', '--').alias('d')).collect()
+    >>> df.select(regexp_replace('str', r'(\d+)', '--').alias('d')).collect()
     [Row(d=u'-----')]
     """
     sc = SparkContext._active_spark_context
@@ -1913,7 +1907,12 @@ def arrays_overlap(a1, a2):
 def slice(x, start, length):
     """
     Collection function: returns an array containing  all the elements in `x` from index `start`
-    (or starting from the end if `start` is negative) with the specified `length`.
+    (array indices start at 1, or from the end if `start` is negative) with the specified `length`.
+
+    :param x: the array to be sliced
+    :param start: the starting index
+    :param length: the length of the slice
+
     >>> df = spark.createDataFrame([([1, 2, 3],), ([4, 5],)], ['x'])
     >>> df.select(slice(df.x, 2, 2).alias("sliced")).collect()
     [Row(sliced=[2, 3]), Row(sliced=[5])]
@@ -1996,11 +1995,12 @@ def element_at(col, extraction):
     [Row(element_at(data, 1)=u'a'), Row(element_at(data, 1)=None)]
 
     >>> df = spark.createDataFrame([({"a": 1.0, "b": 2.0},), ({},)], ['data'])
-    >>> df.select(element_at(df.data, "a")).collect()
+    >>> df.select(element_at(df.data, lit("a"))).collect()
     [Row(element_at(data, a)=1.0), Row(element_at(data, a)=None)]
     """
     sc = SparkContext._active_spark_context
-    return Column(sc._jvm.functions.element_at(_to_java_column(col), extraction))
+    return Column(sc._jvm.functions.element_at(
+        _to_java_column(col), lit(extraction)._jc))  # noqa: F821 'lit' is dynamically defined.
 
 
 @since(2.4)
@@ -2289,13 +2289,11 @@ def from_json(col, schema, options={}):
 @since(2.1)
 def to_json(col, options={}):
     """
-    Converts a column containing a :class:`StructType`, :class:`ArrayType` of
-    :class:`StructType`\\s, a :class:`MapType` or :class:`ArrayType` of :class:`MapType`\\s
+    Converts a column containing a :class:`StructType`, :class:`ArrayType` or a :class:`MapType`
     into a JSON string. Throws an exception, in the case of an unsupported type.
 
-    :param col: name of column containing the struct, array of the structs, the map or
-        array of the maps.
-    :param options: options to control converting. accepts the same options as the json datasource
+    :param col: name of column containing a struct, an array or a map.
+    :param options: options to control converting. accepts the same options as the JSON datasource
 
     >>> from pyspark.sql import Row
     >>> from pyspark.sql.types import *
@@ -2315,6 +2313,10 @@ def to_json(col, options={}):
     >>> df = spark.createDataFrame(data, ("key", "value"))
     >>> df.select(to_json(df.value).alias("json")).collect()
     [Row(json=u'[{"name":"Alice"},{"name":"Bob"}]')]
+    >>> data = [(1, ["Alice", "Bob"])]
+    >>> df = spark.createDataFrame(data, ("key", "value"))
+    >>> df.select(to_json(df.value).alias("json")).collect()
+    [Row(json=u'["Alice","Bob"]')]
     """
 
     sc = SparkContext._active_spark_context
@@ -2324,23 +2326,25 @@ def to_json(col, options={}):
 
 @ignore_unicode_prefix
 @since(2.4)
-def schema_of_json(col):
+def schema_of_json(json):
     """
-    Parses a column containing a JSON string and infers its schema in DDL format.
+    Parses a JSON string and infers its schema in DDL format.
 
-    :param col: string column in json format
+    :param json: a JSON string or a string literal containing a JSON string.
 
-    >>> from pyspark.sql.types import *
-    >>> data = [(1, '{"a": 1}')]
-    >>> df = spark.createDataFrame(data, ("key", "value"))
-    >>> df.select(schema_of_json(df.value).alias("json")).collect()
-    [Row(json=u'struct<a:bigint>')]
-    >>> df.select(schema_of_json(lit('{"a": 0}')).alias("json")).collect()
+    >>> df = spark.range(1)
+    >>> df.select(schema_of_json('{"a": 0}').alias("json")).collect()
     [Row(json=u'struct<a:bigint>')]
     """
+    if isinstance(json, basestring):
+        col = _create_column_from_literal(json)
+    elif isinstance(json, Column):
+        col = _to_java_column(json)
+    else:
+        raise TypeError("schema argument should be a column or string")
 
     sc = SparkContext._active_spark_context
-    jc = sc._jvm.functions.schema_of_json(_to_java_column(col))
+    jc = sc._jvm.functions.schema_of_json(col)
     return Column(jc)
 
 
@@ -2516,26 +2520,6 @@ def map_values(col):
     """
     sc = SparkContext._active_spark_context
     return Column(sc._jvm.functions.map_values(_to_java_column(col)))
-
-
-@since(2.4)
-def map_entries(col):
-    """
-    Collection function: Returns an unordered array of all entries in the given map.
-
-    :param col: name of column or expression
-
-    >>> from pyspark.sql.functions import map_entries
-    >>> df = spark.sql("SELECT map(1, 'a', 2, 'b') as data")
-    >>> df.select(map_entries("data").alias("entries")).show()
-    +----------------+
-    |         entries|
-    +----------------+
-    |[[1, a], [2, b]]|
-    +----------------+
-    """
-    sc = SparkContext._active_spark_context
-    return Column(sc._jvm.functions.map_entries(_to_java_column(col)))
 
 
 @since(2.4)
@@ -2718,8 +2702,9 @@ def pandas_udf(f=None, returnType=None, functionType=None):
     1. SCALAR
 
        A scalar UDF defines a transformation: One or more `pandas.Series` -> A `pandas.Series`.
-       The returnType should be a primitive data type, e.g., :class:`DoubleType`.
        The length of the returned `pandas.Series` must be of the same as the input `pandas.Series`.
+
+       :class:`MapType`, :class:`StructType` are currently not supported as output types.
 
        Scalar UDFs are used with :meth:`pyspark.sql.DataFrame.withColumn` and
        :meth:`pyspark.sql.DataFrame.select`.
@@ -2781,14 +2766,14 @@ def pandas_udf(f=None, returnType=None, functionType=None):
        +---+-------------------+
 
        Alternatively, the user can define a function that takes two arguments.
-       In this case, the grouping key will be passed as the first argument and the data will
-       be passed as the second argument. The grouping key will be passed as a tuple of numpy
+       In this case, the grouping key(s) will be passed as the first argument and the data will
+       be passed as the second argument. The grouping key(s) will be passed as a tuple of numpy
        data types, e.g., `numpy.int32` and `numpy.float64`. The data will still be passed in
        as a `pandas.DataFrame` containing all columns from the original Spark DataFrame.
-       This is useful when the user does not want to hardcode grouping key in the function.
+       This is useful when the user does not want to hardcode grouping key(s) in the function.
 
-       >>> from pyspark.sql.functions import pandas_udf, PandasUDFType
        >>> import pandas as pd  # doctest: +SKIP
+       >>> from pyspark.sql.functions import pandas_udf, PandasUDFType
        >>> df = spark.createDataFrame(
        ...     [(1, 1.0), (1, 2.0), (2, 3.0), (2, 5.0), (2, 10.0)],
        ...     ("id", "v"))  # doctest: +SKIP
@@ -2804,6 +2789,22 @@ def pandas_udf(f=None, returnType=None, functionType=None):
        |  1|1.5|
        |  2|6.0|
        +---+---+
+       >>> @pandas_udf(
+       ...    "id long, `ceil(v / 2)` long, v double",
+       ...    PandasUDFType.GROUPED_MAP)  # doctest: +SKIP
+       >>> def sum_udf(key, pdf):
+       ...     # key is a tuple of two numpy.int64s, which is the values
+       ...     # of 'id' and 'ceil(df.v / 2)' for the current group
+       ...     return pd.DataFrame([key + (pdf.v.sum(),)])
+       >>> df.groupby(df.id, ceil(df.v / 2)).apply(sum_udf).show()  # doctest: +SKIP
+       +---+-----------+----+
+       | id|ceil(v / 2)|   v|
+       +---+-----------+----+
+       |  2|          5|10.0|
+       |  1|          1| 3.0|
+       |  2|          3| 5.0|
+       |  2|          2| 3.0|
+       +---+-----------+----+
 
        .. note:: If returning a new `pandas.DataFrame` constructed with a dictionary, it is
            recommended to explicitly index the columns by name to ensure the positions are correct,

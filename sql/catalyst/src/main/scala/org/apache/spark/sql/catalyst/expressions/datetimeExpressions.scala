@@ -542,6 +542,12 @@ case class WeekOfYear(child: Expression) extends UnaryExpression with ImplicitCa
 // scalastyle:off line.size.limit
 @ExpressionDescription(
   usage = "_FUNC_(timestamp, fmt) - Converts `timestamp` to a value of string in the format specified by the date format `fmt`.",
+  arguments = """
+    Arguments:
+      * timestamp - A date/timestamp or string to be converted to the given format.
+      * fmt - Date/time format pattern to follow. See `java.text.SimpleDateFormat` for valid date
+              and time format patterns.
+  """,
   examples = """
     Examples:
       > SELECT _FUNC_('2016-04-08', 'y');
@@ -583,7 +589,14 @@ case class DateFormatClass(left: Expression, right: Expression, timeZoneId: Opti
  * Deterministic version of [[UnixTimestamp]], must have at least one parameter.
  */
 @ExpressionDescription(
-  usage = "_FUNC_(expr[, pattern]) - Returns the UNIX timestamp of the given time.",
+  usage = "_FUNC_(timeExp[, format]) - Returns the UNIX timestamp of the given time.",
+  arguments = """
+    Arguments:
+      * timeExp - A date/timestamp or string which is returned as a UNIX timestamp.
+      * format - Date/time format pattern to follow. Ignored if `timeExp` is not a string.
+                 Default value is "yyyy-MM-dd HH:mm:ss". See `java.text.SimpleDateFormat`
+                 for valid date and time format patterns.
+  """,
   examples = """
     Examples:
       > SELECT _FUNC_('2016-04-08', 'yyyy-MM-dd');
@@ -622,7 +635,14 @@ case class ToUnixTimestamp(
  * second parameter.
  */
 @ExpressionDescription(
-  usage = "_FUNC_([expr[, pattern]]) - Returns the UNIX timestamp of current or specified time.",
+  usage = "_FUNC_([timeExp[, format]]) - Returns the UNIX timestamp of current or specified time.",
+  arguments = """
+    Arguments:
+      * timeExp - A date/timestamp or string. If not provided, this defaults to current time.
+      * format - Date/time format pattern to follow. Ignored if `timeExp` is not a string.
+                 Default value is "yyyy-MM-dd HH:mm:ss". See `java.text.SimpleDateFormat`
+                 for valid date and time format patterns.
+  """,
   examples = """
     Examples:
       > SELECT _FUNC_();
@@ -777,6 +797,12 @@ abstract class UnixTime
  */
 @ExpressionDescription(
   usage = "_FUNC_(unix_time, format) - Returns `unix_time` in the specified `format`.",
+  arguments = """
+    Arguments:
+      * unix_time - UNIX Timestamp to be converted to the provided format.
+      * format - Date/time format pattern to follow. See `java.text.SimpleDateFormat`
+                 for valid date and time format patterns.
+  """,
   examples = """
     Examples:
       > SELECT _FUNC_(0, 'yyyy-MM-dd HH:mm:ss');
@@ -1018,51 +1044,18 @@ case class TimeAdd(start: Expression, interval: Expression, timeZoneId: Option[S
 }
 
 /**
- * A special expression used to convert the string input of `to/from_utc_timestamp` to timestamp,
- * which requires the timestamp string to not have timezone information, otherwise null is returned.
- */
-case class StringToTimestampWithoutTimezone(child: Expression, timeZoneId: Option[String] = None)
-  extends UnaryExpression with TimeZoneAwareExpression with ExpectsInputTypes {
-
-  override def withTimeZone(timeZoneId: String): TimeZoneAwareExpression =
-    copy(timeZoneId = Option(timeZoneId))
-
-  override def inputTypes: Seq[AbstractDataType] = Seq(StringType)
-  override def dataType: DataType = TimestampType
-  override def nullable: Boolean = true
-  override def toString: String = child.toString
-  override def sql: String = child.sql
-
-  override def nullSafeEval(input: Any): Any = {
-    DateTimeUtils.stringToTimestamp(
-      input.asInstanceOf[UTF8String], timeZone, rejectTzInString = true).orNull
-  }
-
-  override def doGenCode(ctx: CodegenContext, ev: ExprCode): ExprCode = {
-    val dtu = DateTimeUtils.getClass.getName.stripSuffix("$")
-    val tz = ctx.addReferenceObj("timeZone", timeZone)
-    val longOpt = ctx.freshName("longOpt")
-    val eval = child.genCode(ctx)
-    val code = code"""
-       |${eval.code}
-       |${CodeGenerator.JAVA_BOOLEAN} ${ev.isNull} = true;
-       |${CodeGenerator.JAVA_LONG} ${ev.value} = ${CodeGenerator.defaultValue(TimestampType)};
-       |if (!${eval.isNull}) {
-       |  scala.Option<Long> $longOpt = $dtu.stringToTimestamp(${eval.value}, $tz, true);
-       |  if ($longOpt.isDefined()) {
-       |    ${ev.value} = ((Long) $longOpt.get()).longValue();
-       |    ${ev.isNull} = false;
-       |  }
-       |}
-     """.stripMargin
-    ev.copy(code = code)
-  }
-}
-
-/**
- * Given a timestamp like '2017-07-14 02:40:00.0', interprets it as a time in UTC, and renders
- * that time as a timestamp in the given time zone. For example, 'GMT+1' would yield
- * '2017-07-14 03:40:00.0'.
+ * This is a common function for databases supporting TIMESTAMP WITHOUT TIMEZONE. This function
+ * takes a timestamp which is timezone-agnostic, and interprets it as a timestamp in UTC, and
+ * renders that timestamp as a timestamp in the given time zone.
+ *
+ * However, timestamp in Spark represents number of microseconds from the Unix epoch, which is not
+ * timezone-agnostic. So in Spark this function just shift the timestamp value from UTC timezone to
+ * the given timezone.
+ *
+ * This function may return confusing result if the input is a string with timezone, e.g.
+ * '2018-03-13T06:18:23+00:00'. The reason is that, Spark firstly cast the string to timestamp
+ * according to the timezone in the string, and finally display the result by converting the
+ * timestamp to string according to the session local timezone.
  */
 // scalastyle:off line.size.limit
 @ExpressionDescription(
@@ -1257,9 +1250,18 @@ case class MonthsBetween(
 }
 
 /**
- * Given a timestamp like '2017-07-14 02:40:00.0', interprets it as a time in the given time zone,
- * and renders that time as a timestamp in UTC. For example, 'GMT+1' would yield
- * '2017-07-14 01:40:00.0'.
+ * This is a common function for databases supporting TIMESTAMP WITHOUT TIMEZONE. This function
+ * takes a timestamp which is timezone-agnostic, and interprets it as a timestamp in the given
+ * timezone, and renders that timestamp as a timestamp in UTC.
+ *
+ * However, timestamp in Spark represents number of microseconds from the Unix epoch, which is not
+ * timezone-agnostic. So in Spark this function just shift the timestamp value from the given
+ * timezone to UTC timezone.
+ *
+ * This function may return confusing result if the input is a string with timezone, e.g.
+ * '2018-03-13T06:18:23+00:00'. The reason is that, Spark firstly cast the string to timestamp
+ * according to the timezone in the string, and finally display the result by converting the
+ * timestamp to string according to the session local timezone.
  */
 // scalastyle:off line.size.limit
 @ExpressionDescription(
@@ -1328,6 +1330,12 @@ case class ToUTCTimestamp(left: Expression, right: Expression)
       a date. Returns null with invalid input. By default, it follows casting rules to a date if
       the `fmt` is omitted.
   """,
+  arguments = """
+    Arguments:
+      * date_str - A string to be parsed to date.
+      * fmt - Date format pattern to follow. See `java.text.SimpleDateFormat` for valid
+              date and time format patterns.
+  """,
   examples = """
     Examples:
       > SELECT _FUNC_('2009-07-30 04:17:52');
@@ -1366,9 +1374,15 @@ case class ParseToDate(left: Expression, format: Option[Expression], child: Expr
  */
 @ExpressionDescription(
   usage = """
-    _FUNC_(timestamp[, fmt]) - Parses the `timestamp` expression with the `fmt` expression to
-      a timestamp. Returns null with invalid input. By default, it follows casting rules to
+    _FUNC_(timestamp_str[, fmt]) - Parses the `timestamp_str` expression with the `fmt` expression
+      to a timestamp. Returns null with invalid input. By default, it follows casting rules to
       a timestamp if the `fmt` is omitted.
+  """,
+  arguments = """
+    Arguments:
+      * timestamp_str - A string to be parsed to timestamp.
+      * fmt - Timestamp format pattern to follow. See `java.text.SimpleDateFormat` for valid
+              date and time format patterns.
   """,
   examples = """
     Examples:

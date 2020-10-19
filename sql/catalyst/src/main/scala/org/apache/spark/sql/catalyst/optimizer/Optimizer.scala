@@ -130,6 +130,14 @@ abstract class Optimizer(sessionCatalog: SessionCatalog)
     //   since the other rules might make two separate Unions operators adjacent.
     Batch("Union", Once,
       CombineUnions) ::
+    // run this once earlier. this might simplify the plan and reduce cost of optimizer.
+    // for example, a query such as Filter(LocalRelation) would go through all the heavy
+    // optimizer rules that are triggered when there is a filter
+    // (e.g. InferFiltersFromConstraints). if we run this batch earlier, the query becomes just
+    // LocalRelation and does not trigger many rules
+    Batch("LocalRelation early", fixedPoint,
+      ConvertToLocalRelation,
+      PropagateEmptyRelation) ::
     Batch("Pullup Correlated Expressions", Once,
       PullupCorrelatedPredicates) ::
     Batch("Subquery", Once,
@@ -157,7 +165,10 @@ abstract class Optimizer(sessionCatalog: SessionCatalog)
     Batch("LocalRelation", fixedPoint,
       ConvertToLocalRelation,
       PropagateEmptyRelation) :+
-    // The following batch should be executed after batch "Join Reorder" and "LocalRelation".
+    Batch("Extract PythonUDF From JoinCondition", Once,
+      PullOutPythonUDFInJoinCondition) :+
+    // The following batch should be executed after batch "Join Reorder" "LocalRelation" and
+    // "Extract PythonUDF From JoinCondition".
     Batch("Check Cartesian Products", Once,
       CheckCartesianProducts) :+
     Batch("RewriteSubquery", Once,
@@ -194,7 +205,8 @@ abstract class Optimizer(sessionCatalog: SessionCatalog)
       ReplaceDistinctWithAggregate.ruleName ::
       PullupCorrelatedPredicates.ruleName ::
       RewriteCorrelatedScalarSubquery.ruleName ::
-      RewritePredicateSubquery.ruleName :: Nil
+      RewritePredicateSubquery.ruleName ::
+      PullOutPythonUDFInJoinCondition.ruleName :: Nil
 
   /**
    * Optimize all the subqueries inside expression.
@@ -478,6 +490,10 @@ object PushProjectionThroughUnion extends Rule[LogicalPlan] with PredicateHelper
   private def pushToRight[A <: Expression](e: A, rewrites: AttributeMap[Attribute]) = {
     val result = e transform {
       case a: Attribute => rewrites(a)
+    } match {
+      // Make sure exprId is unique in each child of Union.
+      case Alias(child, alias) => Alias(child, alias)()
+      case other => other
     }
 
     // We must promise the compiler that we did not discard the names in the case of project
@@ -1343,12 +1359,18 @@ object ConvertToLocalRelation extends Rule[LogicalPlan] {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case Project(projectList, LocalRelation(output, data, isStreaming))
         if !projectList.exists(hasUnevaluableExpr) =>
-      val projection = new InterpretedProjection(projectList, output)
+      val projection = new InterpretedMutableProjection(projectList, output)
       projection.initialize(0)
-      LocalRelation(projectList.map(_.toAttribute), data.map(projection), isStreaming)
+      LocalRelation(projectList.map(_.toAttribute), data.map(projection(_).copy()), isStreaming)
 
     case Limit(IntegerLiteral(limit), LocalRelation(output, data, isStreaming)) =>
       LocalRelation(output, data.take(limit), isStreaming)
+
+    case Filter(condition, LocalRelation(output, data, isStreaming))
+        if !hasUnevaluableExpr(condition) =>
+      val predicate = InterpretedPredicate.create(condition, output)
+      predicate.initialize(0)
+      LocalRelation(output, data.filter(row => predicate.eval(row)), isStreaming)
   }
 
   private def hasUnevaluableExpr(expr: Expression): Boolean = {

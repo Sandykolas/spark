@@ -26,16 +26,16 @@ Often, this will be the first thing you should tune to optimize a Spark applicat
 Spark aims to strike a balance between convenience (allowing you to work with any Java type
 in your operations) and performance. It provides two serialization libraries:
 
-* [Java serialization](http://docs.oracle.com/javase/6/docs/api/java/io/Serializable.html):
+* [Java serialization](https://docs.oracle.com/javase/8/docs/api/java/io/Serializable.html):
   By default, Spark serializes objects using Java's `ObjectOutputStream` framework, and can work
   with any class you create that implements
-  [`java.io.Serializable`](http://docs.oracle.com/javase/6/docs/api/java/io/Serializable.html).
+  [`java.io.Serializable`](https://docs.oracle.com/javase/8/docs/api/java/io/Serializable.html).
   You can also control the performance of your serialization more closely by extending
-  [`java.io.Externalizable`](http://docs.oracle.com/javase/6/docs/api/java/io/Externalizable.html).
+  [`java.io.Externalizable`](https://docs.oracle.com/javase/8/docs/api/java/io/Externalizable.html).
   Java serialization is flexible but often quite slow, and leads to large
   serialized formats for many classes.
 * [Kryo serialization](https://github.com/EsotericSoftware/kryo): Spark can also use
-  the Kryo library (version 2) to serialize objects more quickly. Kryo is significantly
+  the Kryo library (version 4) to serialize objects more quickly. Kryo is significantly
   faster and more compact than Java serialization (often as much as 10x), but does not support all
   `Serializable` types and requires you to *register* the classes you'll use in the program in advance
   for best performance.
@@ -230,7 +230,7 @@ temporary objects created during task execution. Some steps which may be useful 
 * Monitor how the frequency and time taken by garbage collection changes with the new settings.
 
 Our experience suggests that the effect of GC tuning depends on your application and the amount of memory available.
-There are [many more tuning options](http://www.oracle.com/technetwork/java/javase/gc-tuning-6-140523.html) described online,
+There are [many more tuning options](https://docs.oracle.com/javase/8/docs/technotes/guides/vm/gctuning/index.html) described online,
 but at a high level, managing how frequently full GC takes place can help in reducing the overhead.
 
 GC tuning flags for executors can be specified by setting `spark.executor.extraJavaOptions` in
@@ -248,6 +248,17 @@ parent RDD's number of partitions. You can pass the level of parallelism as a se
 (see the [`spark.PairRDDFunctions`](api/scala/index.html#org.apache.spark.rdd.PairRDDFunctions) documentation),
 or set the config property `spark.default.parallelism` to change the default.
 In general, we recommend 2-3 tasks per CPU core in your cluster.
+
+## Parallel Listing on Input Paths
+
+Sometimes you may also need to increase directory listing parallelism when job input has large number of directories,
+otherwise the process could take a very long time, especially when against object store like S3.
+If your job works on RDD with Hadoop input formats (e.g., via `SparkContext.sequenceFile`), the parallelism is
+controlled via [`spark.hadoop.mapreduce.input.fileinputformat.list-status.num-threads`](https://hadoop.apache.org/docs/current/hadoop-mapreduce-client/hadoop-mapreduce-client-core/mapred-default.xml) (currently default is 1).
+
+For Spark SQL with file-based data sources, you can tune `spark.sql.sources.parallelPartitionDiscovery.threshold` and
+`spark.sql.sources.parallelPartitionDiscovery.parallelism` to improve listing parallelism. Please
+refer to [Spark SQL performance tuning guide](sql-performance-tuning.html) for more details.
 
 ## Memory Usage of Reduce Tasks
 

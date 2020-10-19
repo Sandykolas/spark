@@ -117,7 +117,8 @@ private[ui] class StagePage(parent: StagesTab, store: AppStatusStore) extends We
 
     val localitySummary = store.localitySummary(stageData.stageId, stageData.attemptId)
 
-    val totalTasks = taskCount(stageData)
+    val totalTasks = stageData.numActiveTasks + stageData.numCompleteTasks +
+      stageData.numFailedTasks + stageData.numKilledTasks
     if (totalTasks == 0) {
       val content =
         <div>
@@ -132,7 +133,7 @@ private[ui] class StagePage(parent: StagesTab, store: AppStatusStore) extends We
     val totalTasksNumStr = if (totalTasks == storedTasks) {
       s"$totalTasks"
     } else {
-      s"$storedTasks, showing ${totalTasks}"
+      s"$totalTasks, showing $storedTasks"
     }
 
     val summary =
@@ -539,10 +540,10 @@ private[ui] class StagePage(parent: StagesTab, store: AppStatusStore) extends We
 
         val executorOverhead = serializationTime + deserializationTime
         val executorRunTime = if (taskInfo.duration.isDefined) {
-          totalExecutionTime - executorOverhead - gettingResultTime
+          math.max(totalExecutionTime - executorOverhead - gettingResultTime - schedulerDelay, 0)
         } else {
           metricsOpt.map(_.executorRunTime).getOrElse(
-            totalExecutionTime - executorOverhead - gettingResultTime)
+            math.max(totalExecutionTime - executorOverhead - gettingResultTime - schedulerDelay, 0))
         }
         val executorComputingTime = executorRunTime - shuffleReadTime - shuffleWriteTime
         val executorComputingTimeProportion =
@@ -685,7 +686,7 @@ private[ui] class TaskDataSource(
 
   private var _tasksToShow: Seq[TaskData] = null
 
-  override def dataSize: Int = taskCount(stage)
+  override def dataSize: Int = store.taskCount(stage.stageId, stage.attemptId).toInt
 
   override def sliceData(from: Int, to: Int): Seq[TaskData] = {
     if (_tasksToShow == null) {
@@ -847,7 +848,7 @@ private[ui] class TaskPagedTable(
         </div>
       </td>
       <td>{UIUtils.formatDate(task.launchTime)}</td>
-      <td>{formatDuration(task.duration)}</td>
+      <td>{formatDuration(task.taskMetrics.map(_.executorRunTime))}</td>
       <td class={TaskDetailsClassNames.SCHEDULER_DELAY}>
         {UIUtils.formatDuration(AppStatusUtils.schedulerDelay(task))}
       </td>
@@ -870,18 +871,22 @@ private[ui] class TaskPagedTable(
         <td>{accumulatorsInfo(task)}</td>
       }}
       {if (hasInput(stage)) {
-        metricInfo(task) { m =>
-          val bytesRead = Utils.bytesToString(m.inputMetrics.bytesRead)
-          val records = m.inputMetrics.recordsRead
-          <td>{bytesRead} / {records}</td>
-        }
+        <td>{
+          metricInfo(task) { m =>
+            val bytesRead = Utils.bytesToString(m.inputMetrics.bytesRead)
+            val records = m.inputMetrics.recordsRead
+            Unparsed(s"$bytesRead / $records")
+          }
+        }</td>
       }}
       {if (hasOutput(stage)) {
-        metricInfo(task) { m =>
-          val bytesWritten = Utils.bytesToString(m.outputMetrics.bytesWritten)
-          val records = m.outputMetrics.recordsWritten
-          <td>{bytesWritten} / {records}</td>
-        }
+        <td>{
+          metricInfo(task) { m =>
+            val bytesWritten = Utils.bytesToString(m.outputMetrics.bytesWritten)
+            val records = m.outputMetrics.recordsWritten
+            Unparsed(s"$bytesWritten / $records")
+          }
+        }</td>
       }}
       {if (hasShuffleRead(stage)) {
         <td class={TaskDetailsClassNames.SHUFFLE_READ_BLOCKED_TIME}>
@@ -1000,7 +1005,9 @@ private[ui] object ApiHelper {
     HEADER_EXECUTOR -> TaskIndexNames.EXECUTOR,
     HEADER_HOST -> TaskIndexNames.HOST,
     HEADER_LAUNCH_TIME -> TaskIndexNames.LAUNCH_TIME,
-    HEADER_DURATION -> TaskIndexNames.DURATION,
+    // SPARK-26109: Duration of task as executorRunTime to make it consistent with the
+    // aggregated tasks summary metrics table and the previous versions of Spark.
+    HEADER_DURATION -> TaskIndexNames.EXEC_RUN_TIME,
     HEADER_SCHEDULER_DELAY -> TaskIndexNames.SCHEDULER_DELAY,
     HEADER_DESER_TIME -> TaskIndexNames.DESER_TIME,
     HEADER_GC_TIME -> TaskIndexNames.GC_TIME,
@@ -1049,11 +1056,6 @@ private[ui] object ApiHelper {
   def lastStageNameAndDescription(store: AppStatusStore, job: JobData): (String, String) = {
     val stage = store.asOption(store.stageAttempt(job.stageIds.max, 0))
     (stage.map(_.name).getOrElse(""), stage.flatMap(_.description).getOrElse(job.name))
-  }
-
-  def taskCount(stageData: StageData): Int = {
-    stageData.numActiveTasks + stageData.numCompleteTasks + stageData.numFailedTasks +
-      stageData.numKilledTasks
   }
 
 }

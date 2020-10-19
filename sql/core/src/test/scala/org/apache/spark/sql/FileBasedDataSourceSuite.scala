@@ -18,12 +18,17 @@
 package org.apache.spark.sql
 
 import java.io.{File, FileNotFoundException}
+import java.net.URI
 import java.util.Locale
 
-import org.apache.hadoop.fs.Path
+import scala.collection.mutable
+
+import org.apache.hadoop.conf.Configuration
+import org.apache.hadoop.fs.{LocalFileSystem, Path}
 import org.scalatest.BeforeAndAfterAll
 
 import org.apache.spark.SparkException
+import org.apache.spark.scheduler.{SparkListener, SparkListenerTaskEnd}
 import org.apache.spark.sql.TestingUDT.{IntervalData, IntervalUDT, NullData, NullUDT}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
@@ -431,45 +436,80 @@ class FileBasedDataSourceSuite extends QueryTest with SharedSQLContext with Befo
     }
   }
 
-  test(s"SPARK-25132: case-insensitive field resolution when reading from Parquet") {
-    withTempDir { dir =>
-      val format = "parquet"
-      val tableDir = dir.getCanonicalPath + s"/$format"
-      val tableName = s"spark_25132_${format}"
-      withTable(tableName) {
-        val end = 5
-        val data = spark.range(end).selectExpr("id as A", "id * 2 as b", "id * 3 as B")
-        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
-          data.write.format(format).mode("overwrite").save(tableDir)
-        }
-        sql(s"CREATE TABLE $tableName (a LONG, b LONG) USING $format LOCATION '$tableDir'")
-
-        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
-          checkAnswer(sql(s"select a from $tableName"), data.select("A"))
-          checkAnswer(sql(s"select A from $tableName"), data.select("A"))
-
-          // RuntimeException is triggered at executor side, which is then wrapped as
-          // SparkException at driver side
-          val e1 = intercept[SparkException] {
-            sql(s"select b from $tableName").collect()
+  Seq("parquet", "orc").foreach { format =>
+    test(s"Spark native readers should respect spark.sql.caseSensitive - ${format}") {
+      withTempDir { dir =>
+        val tableName = s"spark_25132_${format}_native"
+        val tableDir = dir.getCanonicalPath + s"/$tableName"
+        withTable(tableName) {
+          val end = 5
+          val data = spark.range(end).selectExpr("id as A", "id * 2 as b", "id * 3 as B")
+          withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+            data.write.format(format).mode("overwrite").save(tableDir)
           }
-          assert(
-            e1.getCause.isInstanceOf[RuntimeException] &&
-              e1.getCause.getMessage.contains(
-                """Found duplicate field(s) "b": [b, B] in case-insensitive mode"""))
-          val e2 = intercept[SparkException] {
-            sql(s"select B from $tableName").collect()
-          }
-          assert(
-            e2.getCause.isInstanceOf[RuntimeException] &&
-              e2.getCause.getMessage.contains(
-                """Found duplicate field(s) "b": [b, B] in case-insensitive mode"""))
-        }
+          sql(s"CREATE TABLE $tableName (a LONG, b LONG) USING $format LOCATION '$tableDir'")
 
-        withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
-          checkAnswer(sql(s"select a from $tableName"), (0 until end).map(_ => Row(null)))
-          checkAnswer(sql(s"select b from $tableName"), data.select("b"))
+          withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+            checkAnswer(sql(s"select a from $tableName"), data.select("A"))
+            checkAnswer(sql(s"select A from $tableName"), data.select("A"))
+
+            // RuntimeException is triggered at executor side, which is then wrapped as
+            // SparkException at driver side
+            val e1 = intercept[SparkException] {
+              sql(s"select b from $tableName").collect()
+            }
+            assert(
+              e1.getCause.isInstanceOf[RuntimeException] &&
+                e1.getCause.getMessage.contains(
+                  """Found duplicate field(s) "b": [b, B] in case-insensitive mode"""))
+            val e2 = intercept[SparkException] {
+              sql(s"select B from $tableName").collect()
+            }
+            assert(
+              e2.getCause.isInstanceOf[RuntimeException] &&
+                e2.getCause.getMessage.contains(
+                  """Found duplicate field(s) "b": [b, B] in case-insensitive mode"""))
+          }
+
+          withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+            checkAnswer(sql(s"select a from $tableName"), (0 until end).map(_ => Row(null)))
+            checkAnswer(sql(s"select b from $tableName"), data.select("b"))
+          }
         }
+      }
+    }
+  }
+
+  test("SPARK-31935: Hadoop file system config should be effective in data source options") {
+    withSQLConf(
+      "fs.file.impl" -> classOf[FakeFileSystemRequiringDSOption].getName,
+      "fs.file.impl.disable.cache" -> "true") {
+      withTempDir { dir =>
+        val path = "file:" + dir.getCanonicalPath.stripPrefix("file:")
+        spark.range(10).write.option("ds_option", "value").mode("overwrite").parquet(path)
+        checkAnswer(
+          spark.read.option("ds_option", "value").parquet(path), spark.range(10).toDF())
+      }
+    }
+  }
+
+  test("SPARK-25237 compute correct input metrics in FileScanRDD") {
+    withTempPath { p =>
+      val path = p.getAbsolutePath
+      spark.range(1000).repartition(1).write.csv(path)
+      val bytesReads = new mutable.ArrayBuffer[Long]()
+      val bytesReadListener = new SparkListener() {
+        override def onTaskEnd(taskEnd: SparkListenerTaskEnd) {
+          bytesReads += taskEnd.taskMetrics.inputMetrics.bytesRead
+        }
+      }
+      sparkContext.addSparkListener(bytesReadListener)
+      try {
+        spark.read.csv(path).limit(1).collect()
+        sparkContext.listenerBus.waitUntilEmpty(1000L)
+        assert(bytesReads.sum === 7860)
+      } finally {
+        sparkContext.removeSparkListener(bytesReadListener)
       }
     }
   }
@@ -500,5 +540,12 @@ object TestingUDT {
     override def deserialize(datum: Any): NullData =
       throw new NotImplementedError("Not implemented")
     override def userClass: Class[NullData] = classOf[NullData]
+  }
+}
+
+class FakeFileSystemRequiringDSOption extends LocalFileSystem {
+  override def initialize(name: URI, conf: Configuration): Unit = {
+    super.initialize(name, conf)
+    require(conf.get("ds_option", "") == "value")
   }
 }

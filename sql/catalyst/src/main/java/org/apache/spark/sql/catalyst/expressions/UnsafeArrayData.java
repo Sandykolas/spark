@@ -17,9 +17,18 @@
 
 package org.apache.spark.sql.catalyst.expressions;
 
+import java.io.Externalizable;
+import java.io.IOException;
+import java.io.ObjectInput;
+import java.io.ObjectOutput;
 import java.math.BigDecimal;
 import java.math.BigInteger;
 import java.nio.ByteBuffer;
+
+import com.esotericsoftware.kryo.Kryo;
+import com.esotericsoftware.kryo.KryoSerializable;
+import com.esotericsoftware.kryo.io.Input;
+import com.esotericsoftware.kryo.io.Output;
 
 import org.apache.spark.sql.catalyst.util.ArrayData;
 import org.apache.spark.sql.types.*;
@@ -27,9 +36,10 @@ import org.apache.spark.unsafe.Platform;
 import org.apache.spark.unsafe.array.ByteArrayMethods;
 import org.apache.spark.unsafe.bitset.BitSetMethods;
 import org.apache.spark.unsafe.hash.Murmur3_x86_32;
-import org.apache.spark.unsafe.memory.MemoryBlock;
 import org.apache.spark.unsafe.types.CalendarInterval;
 import org.apache.spark.unsafe.types.UTF8String;
+
+import static org.apache.spark.unsafe.Platform.BYTE_ARRAY_OFFSET;
 
 /**
  * An Unsafe implementation of Array which is backed by raw memory instead of Java objects.
@@ -53,7 +63,7 @@ import org.apache.spark.unsafe.types.UTF8String;
  * Instances of `UnsafeArrayData` act as pointers to row data stored in this format.
  */
 
-public final class UnsafeArrayData extends ArrayData {
+public final class UnsafeArrayData extends ArrayData implements Externalizable, KryoSerializable {
 
   public static int calculateHeaderPortionInBytes(int numFields) {
     return (int)calculateHeaderPortionInBytes((long)numFields);
@@ -241,8 +251,7 @@ public final class UnsafeArrayData extends ArrayData {
     final long offsetAndSize = getLong(ordinal);
     final int offset = (int) (offsetAndSize >> 32);
     final int size = (int) offsetAndSize;
-    MemoryBlock mb = MemoryBlock.allocateFromObject(baseObject, baseOffset + offset, size);
-    return new UTF8String(mb);
+    return UTF8String.fromAddress(baseObject, baseOffset + offset, size);
   }
 
   @Override
@@ -473,13 +482,27 @@ public final class UnsafeArrayData extends ArrayData {
     return result;
   }
 
-  public static UnsafeArrayData forPrimitiveArray(int offset, int length, int elementSize) {
-    return fromPrimitiveArray(null, offset, length, elementSize);
-  }
-
-  public static boolean shouldUseGenericArrayData(int elementSize, int length) {
+  public static UnsafeArrayData createFreshArray(int length, int elementSize) {
     final long headerInBytes = calculateHeaderPortionInBytes(length);
     final long valueRegionInBytes = (long)elementSize * length;
+    final long totalSizeInLongs = (headerInBytes + valueRegionInBytes + 7) / 8;
+    if (totalSizeInLongs > Integer.MAX_VALUE / 8) {
+      throw new UnsupportedOperationException("Cannot convert this array to unsafe format as " +
+        "it's too big.");
+    }
+
+    final long[] data = new long[(int)totalSizeInLongs];
+
+    Platform.putLong(data, Platform.LONG_ARRAY_OFFSET, length);
+
+    UnsafeArrayData result = new UnsafeArrayData();
+    result.pointTo(data, Platform.LONG_ARRAY_OFFSET, (int)totalSizeInLongs * 8);
+    return result;
+  }
+
+  public static boolean shouldUseGenericArrayData(int elementSize, long length) {
+    final long headerInBytes = calculateHeaderPortionInBytes(length);
+    final long valueRegionInBytes = elementSize * length;
     final long totalSizeInLongs = (headerInBytes + valueRegionInBytes + 7) / 8;
     return totalSizeInLongs > Integer.MAX_VALUE / 8;
   }
@@ -510,5 +533,41 @@ public final class UnsafeArrayData extends ArrayData {
 
   public static UnsafeArrayData fromPrimitiveArray(double[] arr) {
     return fromPrimitiveArray(arr, Platform.DOUBLE_ARRAY_OFFSET, arr.length, 8);
+  }
+
+  @Override
+  public void writeExternal(ObjectOutput out) throws IOException {
+    byte[] bytes = UnsafeDataUtils.getBytes(baseObject, baseOffset, sizeInBytes);
+    out.writeInt(bytes.length);
+    out.writeInt(this.numElements);
+    out.write(bytes);
+  }
+
+  @Override
+  public void readExternal(ObjectInput in) throws IOException, ClassNotFoundException {
+    this.baseOffset = BYTE_ARRAY_OFFSET;
+    this.sizeInBytes = in.readInt();
+    this.numElements = in.readInt();
+    this.elementOffset = baseOffset + calculateHeaderPortionInBytes(this.numElements);
+    this.baseObject = new byte[sizeInBytes];
+    in.readFully((byte[]) baseObject);
+  }
+
+  @Override
+  public void write(Kryo kryo, Output output) {
+    byte[] bytes = UnsafeDataUtils.getBytes(baseObject, baseOffset, sizeInBytes);
+    output.writeInt(bytes.length);
+    output.writeInt(this.numElements);
+    output.write(bytes);
+  }
+
+  @Override
+  public void read(Kryo kryo, Input input) {
+    this.baseOffset = BYTE_ARRAY_OFFSET;
+    this.sizeInBytes = input.readInt();
+    this.numElements = input.readInt();
+    this.elementOffset = baseOffset + calculateHeaderPortionInBytes(this.numElements);
+    this.baseObject = new byte[sizeInBytes];
+    input.read((byte[]) baseObject);
   }
 }

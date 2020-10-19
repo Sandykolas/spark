@@ -18,6 +18,7 @@
 package org.apache.spark.sql.hive.execution
 
 import java.io.File
+import java.net.URI
 import java.nio.charset.StandardCharsets
 import java.sql.{Date, Timestamp}
 import java.util.{Locale, Set}
@@ -32,6 +33,7 @@ import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, Functio
 import org.apache.spark.sql.catalyst.catalog.{CatalogTableType, CatalogUtils, HiveTableRelation}
 import org.apache.spark.sql.catalyst.parser.ParseException
 import org.apache.spark.sql.catalyst.plans.logical.{LogicalPlan, SubqueryAlias}
+import org.apache.spark.sql.execution.command.LoadDataCommand
 import org.apache.spark.sql.execution.datasources.{HadoopFsRelation, LogicalRelation}
 import org.apache.spark.sql.functions._
 import org.apache.spark.sql.hive.{HiveExternalCatalog, HiveUtils}
@@ -39,7 +41,9 @@ import org.apache.spark.sql.hive.test.TestHiveSingleton
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SQLTestUtils
 import org.apache.spark.sql.types._
+import org.apache.spark.tags.SlowHiveTest
 import org.apache.spark.unsafe.types.CalendarInterval
+import org.apache.spark.util.Utils
 
 case class Nested1(f1: Nested2)
 case class Nested2(f2: Nested3)
@@ -64,6 +68,7 @@ case class Order(
  * Hive to generate them (in contrast to HiveQuerySuite).  Often this is because the query is
  * valid, but Hive currently cannot execute it.
  */
+@SlowHiveTest
 class SQLQuerySuite extends QueryTest with SQLTestUtils with TestHiveSingleton {
   import hiveContext._
   import spark.implicits._
@@ -1176,11 +1181,13 @@ class SQLQuerySuite extends QueryTest with SQLTestUtils with TestHiveSingleton {
   }
 
   test("Convert hive interval term into Literal of CalendarIntervalType") {
+    checkAnswer(sql("select interval '0 0:0:0.1' day to second"),
+      Row(CalendarInterval.fromString("interval 100 milliseconds")))
     checkAnswer(sql("select interval '10-9' year to month"),
       Row(CalendarInterval.fromString("interval 10 years 9 months")))
     checkAnswer(sql("select interval '20 15:40:32.99899999' day to second"),
       Row(CalendarInterval.fromString("interval 2 weeks 6 days 15 hours 40 minutes " +
-        "32 seconds 99 milliseconds 899 microseconds")))
+        "32 seconds 998 milliseconds 999 microseconds")))
     checkAnswer(sql("select interval '30' year"),
       Row(CalendarInterval.fromString("interval 30 years")))
     checkAnswer(sql("select interval '25' month"),
@@ -1916,6 +1923,21 @@ class SQLQuerySuite extends QueryTest with SQLTestUtils with TestHiveSingleton {
     }
   }
 
+  test("SPARK-23425 Test LOAD DATA LOCAL INPATH with space in file name") {
+    withTempDir { dir =>
+      val path = dir.toURI.toString.stripSuffix("/")
+      val dirPath = dir.getAbsoluteFile
+      for (i <- 1 to 3) {
+        Files.write(s"$i", new File(dirPath, s"part-r-0000 $i"), StandardCharsets.UTF_8)
+      }
+      withTable("load_t") {
+        sql("CREATE TABLE load_t (a STRING)")
+        sql(s"LOAD DATA LOCAL INPATH '$path/part-r-0000 1' INTO TABLE load_t")
+        checkAnswer(sql("SELECT * FROM load_t"), Seq(Row("1")))
+      }
+    }
+  }
+
   test("Support wildcard character in folderlevel for LOAD DATA LOCAL INPATH") {
     withTempDir { dir =>
       val path = dir.toURI.toString.stripSuffix("/")
@@ -1968,6 +1990,12 @@ class SQLQuerySuite extends QueryTest with SQLTestUtils with TestHiveSingleton {
         checkAnswer(sql("SELECT * FROM load_t2"), Seq(Row("1")))
       }
     }
+  }
+
+  test("SPARK-25738: defaultFs can have a port") {
+    val defaultURI = new URI("hdfs://fizz.buzz.com:8020")
+    val r = LoadDataCommand.makeQualified(defaultURI, new Path("/foo/bar"), new Path("/flim/flam"))
+    assert(r === new Path("hdfs://fizz.buzz.com:8020/flim/flam"))
   }
 
   test("Insert overwrite with partition") {
@@ -2253,4 +2281,133 @@ class SQLQuerySuite extends QueryTest with SQLTestUtils with TestHiveSingleton {
     }
   }
 
+
+  test("SPARK-26181 hasMinMaxStats method of ColumnStatsMap is not correct") {
+    withSQLConf(SQLConf.CBO_ENABLED.key -> "true") {
+      withTable("all_null") {
+        sql("create table all_null (attr1 int, attr2 int)")
+        sql("insert into all_null values (null, null)")
+        sql("analyze table all_null compute statistics for columns attr1, attr2")
+        // check if the stats can be calculated without Cast exception.
+        sql("select * from all_null where attr1 < 1").queryExecution.stringWithStats
+        sql("select * from all_null where attr1 < attr2").queryExecution.stringWithStats
+      }
+    }
+  }
+
+  test("SPARK-26709: OptimizeMetadataOnlyQuery does not handle empty records correctly") {
+    Seq(true, false).foreach { enableOptimizeMetadataOnlyQuery =>
+      withSQLConf(SQLConf.OPTIMIZER_METADATA_ONLY.key -> enableOptimizeMetadataOnlyQuery.toString) {
+        withTable("t") {
+          sql("CREATE TABLE t (col1 INT, p1 INT) USING PARQUET PARTITIONED BY (p1)")
+          sql("INSERT INTO TABLE t PARTITION (p1 = 5) SELECT ID FROM range(1, 1)")
+          if (enableOptimizeMetadataOnlyQuery) {
+            // The result is wrong if we enable the configuration.
+            checkAnswer(sql("SELECT MAX(p1) FROM t"), Row(5))
+          } else {
+            checkAnswer(sql("SELECT MAX(p1) FROM t"), Row(null))
+          }
+          checkAnswer(sql("SELECT MAX(col1) FROM t"), Row(null))
+        }
+      }
+    }
+  }
+
+  test("partition pruning should handle date correctly") {
+    withSQLConf(SQLConf.OPTIMIZER_INSET_CONVERSION_THRESHOLD.key -> "2") {
+      withTable("t") {
+        sql("CREATE TABLE t (i INT) PARTITIONED BY (j DATE)")
+        sql("INSERT INTO t PARTITION(j='1990-11-11') SELECT 1")
+        checkAnswer(sql("SELECT i, CAST(j AS STRING) FROM t"), Row(1, "1990-11-11"))
+        checkAnswer(
+          sql(
+            """
+              |SELECT i, CAST(j AS STRING)
+              |FROM t
+              |WHERE j IN (DATE'1990-11-10', DATE'1990-11-11', DATE'1990-11-12')
+              |""".stripMargin),
+          Row(1, "1990-11-11"))
+      }
+    }
+  }
+
+  test("SPARK-29295: insert overwrite external partition should not have old data") {
+    Seq("true", "false").foreach { convertParquet =>
+      withTable("spark29295") {
+        withTempDir { f =>
+          sql("CREATE EXTERNAL TABLE spark29295(id int) PARTITIONED BY (name string) STORED AS " +
+            s"PARQUET LOCATION '${f.getAbsolutePath}'")
+
+          withSQLConf(HiveUtils.CONVERT_METASTORE_PARQUET.key -> convertParquet) {
+            sql("INSERT OVERWRITE TABLE spark29295 PARTITION(name='n1') SELECT 1")
+            sql("ALTER TABLE spark29295 DROP PARTITION(name='n1')")
+            sql("INSERT OVERWRITE TABLE spark29295 PARTITION(name='n1') SELECT 2")
+            checkAnswer(sql("SELECT id FROM spark29295 WHERE name = 'n1' ORDER BY id"),
+              Array(Row(2)))
+          }
+        }
+      }
+    }
+  }
+
+  test("SPARK-29295: dynamic insert overwrite external partition should not have old data") {
+    Seq("true", "false").foreach { convertParquet =>
+      withTable("spark29295") {
+        withTempDir { f =>
+          sql("CREATE EXTERNAL TABLE spark29295(id int) PARTITIONED BY (p1 string, p2 string) " +
+            s"STORED AS PARQUET LOCATION '${f.getAbsolutePath}'")
+
+          withSQLConf(HiveUtils.CONVERT_METASTORE_PARQUET.key -> convertParquet,
+            "hive.exec.dynamic.partition.mode" -> "nonstrict") {
+            sql(
+              """
+                |INSERT OVERWRITE TABLE spark29295 PARTITION(p1='n1', p2)
+                |SELECT * FROM VALUES (1, 'n2'), (2, 'n3') AS t(id, p2)
+              """.stripMargin)
+            checkAnswer(sql("SELECT id FROM spark29295 WHERE p1 = 'n1' and p2 = 'n2' ORDER BY id"),
+              Array(Row(1)))
+            checkAnswer(sql("SELECT id FROM spark29295 WHERE p1 = 'n1' and p2 = 'n3' ORDER BY id"),
+              Array(Row(2)))
+
+            sql("INSERT OVERWRITE TABLE spark29295 PARTITION(p1='n1', p2) SELECT 4, 'n4'")
+            checkAnswer(sql("SELECT id FROM spark29295 WHERE p1 = 'n1' and p2 = 'n4' ORDER BY id"),
+              Array(Row(4)))
+
+            sql("ALTER TABLE spark29295 DROP PARTITION(p1='n1',p2='n2')")
+            sql("ALTER TABLE spark29295 DROP PARTITION(p1='n1',p2='n3')")
+
+            sql(
+              """
+                |INSERT OVERWRITE TABLE spark29295 PARTITION(p1='n1', p2)
+                |SELECT * FROM VALUES (5, 'n2'), (6, 'n3') AS t(id, p2)
+              """.stripMargin)
+            checkAnswer(sql("SELECT id FROM spark29295 WHERE p1 = 'n1' and p2 = 'n2' ORDER BY id"),
+              Array(Row(5)))
+            checkAnswer(sql("SELECT id FROM spark29295 WHERE p1 = 'n1' and p2 = 'n3' ORDER BY id"),
+              Array(Row(6)))
+            // Partition not overwritten should not be deleted.
+            checkAnswer(sql("SELECT id FROM spark29295 WHERE p1 = 'n1' and p2 = 'n4' ORDER BY id"),
+              Array(Row(4)))
+          }
+        }
+      }
+
+      withTable("spark29295") {
+        withTempDir { f =>
+          sql("CREATE EXTERNAL TABLE spark29295(id int) PARTITIONED BY (p1 string, p2 string) " +
+            s"STORED AS PARQUET LOCATION '${f.getAbsolutePath}'")
+
+          withSQLConf(HiveUtils.CONVERT_METASTORE_PARQUET.key -> convertParquet,
+            "hive.exec.dynamic.partition.mode" -> "nonstrict") {
+            // We should unescape partition value.
+            sql("INSERT OVERWRITE TABLE spark29295 PARTITION(p1='n1', p2) SELECT 1, '/'")
+            sql("ALTER TABLE spark29295 DROP PARTITION(p1='n1',p2='/')")
+            sql("INSERT OVERWRITE TABLE spark29295 PARTITION(p1='n1', p2) SELECT 2, '/'")
+            checkAnswer(sql("SELECT id FROM spark29295 WHERE p1 = 'n1' and p2 = '/' ORDER BY id"),
+              Array(Row(2)))
+          }
+        }
+      }
+    }
+  }
 }

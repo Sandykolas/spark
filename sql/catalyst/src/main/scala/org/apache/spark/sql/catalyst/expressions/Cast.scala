@@ -131,7 +131,7 @@ object Cast {
   private def illegalNumericPrecedence(from: DataType, to: DataType): Boolean = {
     val fromPrecedence = TypeCoercion.numericPrecedence.indexOf(from)
     val toPrecedence = TypeCoercion.numericPrecedence.indexOf(to)
-    toPrecedence > 0 && fromPrecedence > toPrecedence
+    toPrecedence >= 0 && fromPrecedence > toPrecedence
   }
 
   /**
@@ -183,7 +183,7 @@ object Cast {
     case _ => false
   }
 
-  private def resolvableNullability(from: Boolean, to: Boolean) = !from || to
+  def resolvableNullability(from: Boolean, to: Boolean): Boolean = !from || to
 }
 
 /**
@@ -393,7 +393,9 @@ case class Cast(child: Expression, dataType: DataType, timeZoneId: Option[String
   // converting seconds to us
   private[this] def longToTimestamp(t: Long): Long = t * 1000000L
   // converting us to seconds
-  private[this] def timestampToLong(ts: Long): Long = math.floor(ts.toDouble / 1000000L).toLong
+  private[this] def timestampToLong(ts: Long): Long = {
+    Math.floorDiv(ts, DateTimeUtils.MICROS_PER_SECOND)
+  }
   // converting us to seconds in double
   private[this] def timestampToDouble(ts: Long): Double = {
     ts / 1000000.0
@@ -607,6 +609,12 @@ case class Cast(child: Expression, dataType: DataType, timeZoneId: Option[String
     // We can return what the children return. Same thing should happen in the codegen path.
     if (DataType.equalsStructurally(from, to)) {
       identity
+    } else if (from == NullType) {
+      // According to `canCast`, NullType can be casted to any type.
+      // For primitive types, we don't reach here because the guard of `nullSafeEval`.
+      // But for nested types like struct, we might reach here for nested null type field.
+      // We won't call the returned function actually, but returns a placeholder.
+      _ => throw new SparkException(s"should not directly cast from NullType to $to.")
     } else {
       to match {
         case dt if dt == from => identity[Any]
@@ -924,27 +932,36 @@ case class Cast(child: Expression, dataType: DataType, timeZoneId: Option[String
   }
 
   private[this] def changePrecision(d: ExprValue, decimalType: DecimalType,
-      evPrim: ExprValue, evNull: ExprValue): Block =
-    code"""
-      if ($d.changePrecision(${decimalType.precision}, ${decimalType.scale})) {
-        $evPrim = $d;
-      } else {
-        $evNull = true;
-      }
-    """
+      evPrim: ExprValue, evNull: ExprValue, canNullSafeCast: Boolean): Block = {
+    if (canNullSafeCast) {
+      code"""
+         |$d.changePrecision(${decimalType.precision}, ${decimalType.scale});
+         |$evPrim = $d;
+       """.stripMargin
+    } else {
+      code"""
+         |if ($d.changePrecision(${decimalType.precision}, ${decimalType.scale})) {
+         |  $evPrim = $d;
+         |} else {
+         |  $evNull = true;
+         |}
+       """.stripMargin
+    }
+  }
 
   private[this] def castToDecimalCode(
       from: DataType,
       target: DecimalType,
       ctx: CodegenContext): CastFunction = {
     val tmp = ctx.freshVariable("tmpDecimal", classOf[Decimal])
+    val canNullSafeCast = Cast.canNullSafeCastToDecimal(from, target)
     from match {
       case StringType =>
         (c, evPrim, evNull) =>
           code"""
             try {
               Decimal $tmp = Decimal.apply(new java.math.BigDecimal($c.toString()));
-              ${changePrecision(tmp, target, evPrim, evNull)}
+              ${changePrecision(tmp, target, evPrim, evNull, canNullSafeCast)}
             } catch (java.lang.NumberFormatException e) {
               $evNull = true;
             }
@@ -953,7 +970,7 @@ case class Cast(child: Expression, dataType: DataType, timeZoneId: Option[String
         (c, evPrim, evNull) =>
           code"""
             Decimal $tmp = $c ? Decimal.apply(1) : Decimal.apply(0);
-            ${changePrecision(tmp, target, evPrim, evNull)}
+            ${changePrecision(tmp, target, evPrim, evNull, canNullSafeCast)}
           """
       case DateType =>
         // date can't cast to decimal in Hive
@@ -964,19 +981,19 @@ case class Cast(child: Expression, dataType: DataType, timeZoneId: Option[String
           code"""
             Decimal $tmp = Decimal.apply(
               scala.math.BigDecimal.valueOf(${timestampToDoubleCode(c)}));
-            ${changePrecision(tmp, target, evPrim, evNull)}
+            ${changePrecision(tmp, target, evPrim, evNull, canNullSafeCast)}
           """
       case DecimalType() =>
         (c, evPrim, evNull) =>
           code"""
             Decimal $tmp = $c.clone();
-            ${changePrecision(tmp, target, evPrim, evNull)}
+            ${changePrecision(tmp, target, evPrim, evNull, canNullSafeCast)}
           """
       case x: IntegralType =>
         (c, evPrim, evNull) =>
           code"""
             Decimal $tmp = Decimal.apply((long) $c);
-            ${changePrecision(tmp, target, evPrim, evNull)}
+            ${changePrecision(tmp, target, evPrim, evNull, canNullSafeCast)}
           """
       case x: FractionalType =>
         // All other numeric types can be represented precisely as Doubles
@@ -984,7 +1001,7 @@ case class Cast(child: Expression, dataType: DataType, timeZoneId: Option[String
           code"""
             try {
               Decimal $tmp = Decimal.apply(scala.math.BigDecimal.valueOf((double) $c));
-              ${changePrecision(tmp, target, evPrim, evNull)}
+              ${changePrecision(tmp, target, evPrim, evNull, canNullSafeCast)}
             } catch (java.lang.NumberFormatException e) {
               $evNull = true;
             }
@@ -1056,7 +1073,7 @@ case class Cast(child: Expression, dataType: DataType, timeZoneId: Option[String
   }
   private[this] def longToTimeStampCode(l: ExprValue): Block = code"$l * 1000000L"
   private[this] def timestampToIntegerCode(ts: ExprValue): Block =
-    code"java.lang.Math.floor((double) $ts / 1000000L)"
+    code"java.lang.Math.floorDiv($ts, 1000000L)"
   private[this] def timestampToDoubleCode(ts: ExprValue): Block =
     code"$ts / 1000000.0"
 

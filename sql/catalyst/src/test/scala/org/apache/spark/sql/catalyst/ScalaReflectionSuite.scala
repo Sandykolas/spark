@@ -112,6 +112,12 @@ object TestingUDT {
 class ScalaReflectionSuite extends SparkFunSuite {
   import org.apache.spark.sql.catalyst.ScalaReflection._
 
+  test("isSubtype") {
+    assert(isSubtype(localTypeOf[Option[Int]], localTypeOf[Option[_]]))
+    assert(isSubtype(localTypeOf[Option[Int]], localTypeOf[Option[Int]]))
+    assert(!isSubtype(localTypeOf[Option[_]], localTypeOf[Option[Int]]))
+  }
+
   test("SQLUserDefinedType annotation on Scala structure") {
     val schema = schemaFor[TestingUDT.NestedStruct]
     assert(schema === Schema(
@@ -259,23 +265,6 @@ class ScalaReflectionSuite extends SparkFunSuite {
         assert(s.fieldNames === Seq("a", "b", "c"))
         assert(s.fields.map(_.dataType) === Seq(IntegerType, StringType, DoubleType))
     }
-  }
-
-  test("get parameter type from a function object") {
-    val primitiveFunc = (i: Int, j: Long) => "x"
-    val primitiveTypes = getParameterTypes(primitiveFunc)
-    assert(primitiveTypes.forall(_.isPrimitive))
-    assert(primitiveTypes === Seq(classOf[Int], classOf[Long]))
-
-    val boxedFunc = (i: java.lang.Integer, j: java.lang.Long) => "x"
-    val boxedTypes = getParameterTypes(boxedFunc)
-    assert(boxedTypes.forall(!_.isPrimitive))
-    assert(boxedTypes === Seq(classOf[java.lang.Integer], classOf[java.lang.Long]))
-
-    val anyFunc = (i: Any, j: AnyRef) => "x"
-    val anyTypes = getParameterTypes(anyFunc)
-    assert(anyTypes.forall(!_.isPrimitive))
-    assert(anyTypes === Seq(classOf[java.lang.Object], classOf[java.lang.Object]))
   }
 
   test("SPARK-15062: Get correct serializer for List[_]") {

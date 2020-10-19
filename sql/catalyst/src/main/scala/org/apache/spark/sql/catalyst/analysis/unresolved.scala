@@ -23,7 +23,7 @@ import org.apache.spark.sql.catalyst.errors.TreeNodeException
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.codegen.{CodegenContext, ExprCode}
 import org.apache.spark.sql.catalyst.parser.ParserUtils
-import org.apache.spark.sql.catalyst.plans.logical.{LeafNode, LogicalPlan, UnaryNode}
+import org.apache.spark.sql.catalyst.plans.logical.{Aggregate, LeafNode, LogicalPlan, UnaryNode}
 import org.apache.spark.sql.catalyst.trees.TreeNode
 import org.apache.spark.sql.catalyst.util.quoteIdentifier
 import org.apache.spark.sql.types.{DataType, Metadata, StructType}
@@ -112,6 +112,7 @@ case class UnresolvedAttribute(nameParts: Seq[String]) extends Attribute with Un
   override def withQualifier(newQualifier: Seq[String]): UnresolvedAttribute = this
   override def withName(newName: String): UnresolvedAttribute = UnresolvedAttribute.quoted(newName)
   override def withMetadata(newMetadata: Metadata): Attribute = this
+  override def withExprId(newExprId: ExprId): UnresolvedAttribute = this
 
   override def toString: String = s"'$name"
 
@@ -407,7 +408,10 @@ case class ResolvedStar(expressions: Seq[NamedExpression]) extends Star with Une
  *                   can be key of Map, index of Array, field name of Struct.
  */
 case class UnresolvedExtractValue(child: Expression, extraction: Expression)
-  extends UnaryExpression with Unevaluable {
+  extends BinaryExpression with Unevaluable {
+
+  override def left: Expression = child
+  override def right: Expression = extraction
 
   override def dataType: DataType = throw new UnresolvedException(this, "dataType")
   override def foldable: Boolean = throw new UnresolvedException(this, "foldable")
@@ -508,4 +512,16 @@ case class UnresolvedOrdinal(ordinal: Int)
   override def foldable: Boolean = throw new UnresolvedException(this, "foldable")
   override def nullable: Boolean = throw new UnresolvedException(this, "nullable")
   override lazy val resolved = false
+}
+
+/**
+ * Represents unresolved having clause, the child for it can be Aggregate, GroupingSets, Rollup
+ * and Cube. It is turned by the analyzer into a Filter.
+ */
+case class UnresolvedHaving(
+    havingCondition: Expression,
+    child: LogicalPlan)
+  extends UnaryNode {
+  override lazy val resolved: Boolean = false
+  override def output: Seq[Attribute] = child.output
 }

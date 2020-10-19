@@ -222,10 +222,24 @@ abstract class RDD[T: ClassTag](
   /** Get the RDD's current storage level, or StorageLevel.NONE if none is set. */
   def getStorageLevel: StorageLevel = storageLevel
 
+  /**
+   * Lock for all mutable state of this RDD (persistence, partitions, dependencies, etc.).  We do
+   * not use `this` because RDDs are user-visible, so users might have added their own locking on
+   * RDDs; sharing that could lead to a deadlock.
+   *
+   * One thread might hold the lock on many of these, for a chain of RDD dependencies; but
+   * because DAGs are acyclic, and we only ever hold locks for one path in that DAG, there is no
+   * chance of deadlock.
+   *
+   * The use of Integer is simply so this is serializable -- executors may reference the shared
+   * fields (though they should never mutate them, that only happens on the driver).
+   */
+  private val stateLock = new Integer(0)
+
   // Our dependencies and partitions will be gotten by calling subclass's methods below, and will
   // be overwritten when we're checkpointed
-  private var dependencies_ : Seq[Dependency[_]] = _
-  @transient private var partitions_ : Array[Partition] = _
+  @volatile private var dependencies_ : Seq[Dependency[_]] = _
+  @volatile @transient private var partitions_ : Array[Partition] = _
 
   /** An Option holding our checkpoint RDD, if we are checkpointed */
   private def checkpointRDD: Option[CheckpointRDD[T]] = checkpointData.flatMap(_.checkpointRDD)
@@ -237,7 +251,11 @@ abstract class RDD[T: ClassTag](
   final def dependencies: Seq[Dependency[_]] = {
     checkpointRDD.map(r => List(new OneToOneDependency(r))).getOrElse {
       if (dependencies_ == null) {
-        dependencies_ = getDependencies
+        stateLock.synchronized {
+          if (dependencies_ == null) {
+            dependencies_ = getDependencies
+          }
+        }
       }
       dependencies_
     }
@@ -250,10 +268,14 @@ abstract class RDD[T: ClassTag](
   final def partitions: Array[Partition] = {
     checkpointRDD.map(_.partitions).getOrElse {
       if (partitions_ == null) {
-        partitions_ = getPartitions
-        partitions_.zipWithIndex.foreach { case (partition, index) =>
-          require(partition.index == index,
-            s"partitions($index).partition == ${partition.index}, but it should equal $index")
+        stateLock.synchronized {
+          if (partitions_ == null) {
+            partitions_ = getPartitions
+            partitions_.zipWithIndex.foreach { case (partition, index) =>
+              require(partition.index == index,
+                s"partitions($index).partition == ${partition.index}, but it should equal $index")
+            }
+          }
         }
       }
       partitions_
@@ -462,8 +484,9 @@ abstract class RDD[T: ClassTag](
 
       // include a shuffle step so that our upstream tasks are still distributed
       new CoalescedRDD(
-        new ShuffledRDD[Int, T, T](mapPartitionsWithIndex(distributePartition),
-        new HashPartitioner(numPartitions)),
+        new ShuffledRDD[Int, T, T](
+          mapPartitionsWithIndexInternal(distributePartition, isOrderSensitive = true),
+          new HashPartitioner(numPartitions)),
         numPartitions,
         partitionCoalescer).values
     } else {
@@ -540,7 +563,7 @@ abstract class RDD[T: ClassTag](
       val sampler = new BernoulliCellSampler[T](lb, ub)
       sampler.setSeed(seed + index)
       sampler.sample(partition)
-    }, preservesPartitioning = true)
+    }, isOrderSensitive = true, preservesPartitioning = true)
   }
 
   /**
@@ -807,16 +830,21 @@ abstract class RDD[T: ClassTag](
    * serializable and don't require closure cleaning.
    *
    * @param preservesPartitioning indicates whether the input function preserves the partitioner,
-   * which should be `false` unless this is a pair RDD and the input function doesn't modify
-   * the keys.
+   *                              which should be `false` unless this is a pair RDD and the input
+   *                              function doesn't modify the keys.
+   * @param isOrderSensitive whether or not the function is order-sensitive. If it's order
+   *                         sensitive, it may return totally different result when the input order
+   *                         is changed. Mostly stateful functions are order-sensitive.
    */
   private[spark] def mapPartitionsWithIndexInternal[U: ClassTag](
       f: (Int, Iterator[T]) => Iterator[U],
-      preservesPartitioning: Boolean = false): RDD[U] = withScope {
+      preservesPartitioning: Boolean = false,
+      isOrderSensitive: Boolean = false): RDD[U] = withScope {
     new MapPartitionsRDD(
       this,
       (context: TaskContext, index: Int, iter: Iterator[T]) => f(index, iter),
-      preservesPartitioning)
+      preservesPartitioning = preservesPartitioning,
+      isOrderSensitive = isOrderSensitive)
   }
 
   /**
@@ -846,6 +874,29 @@ abstract class RDD[T: ClassTag](
       this,
       (context: TaskContext, index: Int, iter: Iterator[T]) => cleanedF(index, iter),
       preservesPartitioning)
+  }
+
+  /**
+   * Return a new RDD by applying a function to each partition of this RDD, while tracking the index
+   * of the original partition.
+   *
+   * `preservesPartitioning` indicates whether the input function preserves the partitioner, which
+   * should be `false` unless this is a pair RDD and the input function doesn't modify the keys.
+   *
+   * `isOrderSensitive` indicates whether the function is order-sensitive. If it is order
+   * sensitive, it may return totally different result when the input order
+   * is changed. Mostly stateful functions are order-sensitive.
+   */
+  private[spark] def mapPartitionsWithIndex[U: ClassTag](
+      f: (Int, Iterator[T]) => Iterator[U],
+      preservesPartitioning: Boolean,
+      isOrderSensitive: Boolean): RDD[U] = withScope {
+    val cleanedF = sc.clean(f)
+    new MapPartitionsRDD(
+      this,
+      (_: TaskContext, index: Int, iter: Iterator[T]) => cleanedF(index, iter),
+      preservesPartitioning,
+      isOrderSensitive = isOrderSensitive)
   }
 
   /**
@@ -1637,6 +1688,16 @@ abstract class RDD[T: ClassTag](
   }
 
   /**
+   * Return whether this RDD is reliably checkpointed and materialized.
+   */
+  private[rdd] def isReliablyCheckpointed: Boolean = {
+    checkpointData match {
+      case Some(reliable: ReliableRDDCheckpointData[_]) if reliable.isCheckpointed => true
+      case _ => false
+    }
+  }
+
+  /**
    * Gets the name of the directory to which this RDD was checkpointed.
    * This is not defined if the RDD is checkpointed locally.
    */
@@ -1649,7 +1710,15 @@ abstract class RDD[T: ClassTag](
 
   /**
    * :: Experimental ::
-   * Indicates that Spark must launch the tasks together for the current stage.
+   * Marks the current stage as a barrier stage, where Spark must launch all tasks together.
+   * In case of a task failure, instead of only restarting the failed task, Spark will abort the
+   * entire stage and re-launch all tasks for this stage.
+   * The barrier execution mode feature is experimental and it only handles limited scenarios.
+   * Please read the linked SPIP and design docs to understand the limitations and future plans.
+   * @return an [[RDDBarrier]] instance that provides actions within a barrier stage
+   * @see [[org.apache.spark.BarrierTaskContext]]
+   * @see <a href="https://jira.apache.org/jira/browse/SPARK-24374">SPIP: Barrier Execution Mode</a>
+   * @see <a href="https://jira.apache.org/jira/browse/SPARK-24582">Design Doc</a>
    */
   @Experimental
   @Since("2.4.0")
@@ -1751,7 +1820,7 @@ abstract class RDD[T: ClassTag](
    * Changes the dependencies of this RDD from its original parents to a new RDD (`newRDD`)
    * created from the checkpoint file, and forget its old dependencies and partitions.
    */
-  private[spark] def markCheckpointed(): Unit = {
+  private[spark] def markCheckpointed(): Unit = stateLock.synchronized {
     clearDependencies()
     partitions_ = null
     deps = null    // Forget the constructor argument for dependencies too
@@ -1763,7 +1832,7 @@ abstract class RDD[T: ClassTag](
    * collected. Subclasses of RDD may override this method for implementing their own cleaning
    * logic. See [[org.apache.spark.rdd.UnionRDD]] for an example.
    */
-  protected def clearDependencies(): Unit = {
+  protected def clearDependencies(): Unit = stateLock.synchronized {
     dependencies_ = null
   }
 
@@ -1865,6 +1934,64 @@ abstract class RDD[T: ClassTag](
   // RDD chain.
   @transient protected lazy val isBarrier_ : Boolean =
     dependencies.filter(!_.isInstanceOf[ShuffleDependency[_, _, _]]).exists(_.rdd.isBarrier())
+
+  /**
+   * Returns the deterministic level of this RDD's output. Please refer to [[DeterministicLevel]]
+   * for the definition.
+   *
+   * By default, an reliably checkpointed RDD, or RDD without parents(root RDD) is DETERMINATE. For
+   * RDDs with parents, we will generate a deterministic level candidate per parent according to
+   * the dependency. The deterministic level of the current RDD is the deterministic level
+   * candidate that is deterministic least. Please override [[getOutputDeterministicLevel]] to
+   * provide custom logic of calculating output deterministic level.
+   */
+  // TODO: make it public so users can set deterministic level to their custom RDDs.
+  // TODO: this can be per-partition. e.g. UnionRDD can have different deterministic level for
+  // different partitions.
+  private[spark] final lazy val outputDeterministicLevel: DeterministicLevel.Value = {
+    if (isReliablyCheckpointed) {
+      DeterministicLevel.DETERMINATE
+    } else {
+      getOutputDeterministicLevel
+    }
+  }
+
+  @DeveloperApi
+  protected def getOutputDeterministicLevel: DeterministicLevel.Value = {
+    val deterministicLevelCandidates = dependencies.map {
+      // The shuffle is not really happening, treat it like narrow dependency and assume the output
+      // deterministic level of current RDD is same as parent.
+      case dep: ShuffleDependency[_, _, _] if dep.rdd.partitioner.exists(_ == dep.partitioner) =>
+        dep.rdd.outputDeterministicLevel
+
+      case dep: ShuffleDependency[_, _, _] =>
+        if (dep.rdd.outputDeterministicLevel == DeterministicLevel.INDETERMINATE) {
+          // If map output was indeterminate, shuffle output will be indeterminate as well
+          DeterministicLevel.INDETERMINATE
+        } else if (dep.keyOrdering.isDefined && dep.aggregator.isDefined) {
+          // if aggregator specified (and so unique keys) and key ordering specified - then
+          // consistent ordering.
+          DeterministicLevel.DETERMINATE
+        } else {
+          // In Spark, the reducer fetches multiple remote shuffle blocks at the same time, and
+          // the arrival order of these shuffle blocks are totally random. Even if the parent map
+          // RDD is DETERMINATE, the reduce RDD is always UNORDERED.
+          DeterministicLevel.UNORDERED
+        }
+
+      // For narrow dependency, assume the output deterministic level of current RDD is same as
+      // parent.
+      case dep => dep.rdd.outputDeterministicLevel
+    }
+
+    if (deterministicLevelCandidates.isEmpty) {
+      // By default we assume the root RDD is determinate.
+      DeterministicLevel.DETERMINATE
+    } else {
+      deterministicLevelCandidates.maxBy(_.id)
+    }
+  }
+
 }
 
 
@@ -1917,4 +2044,19 @@ object RDD {
     : DoubleRDDFunctions = {
     new DoubleRDDFunctions(rdd.map(x => num.toDouble(x)))
   }
+}
+
+/**
+ * The deterministic level of RDD's output (i.e. what `RDD#compute` returns). This explains how
+ * the output will diff when Spark reruns the tasks for the RDD. There are 3 deterministic levels:
+ * 1. DETERMINATE: The RDD output is always the same data set in the same order after a rerun.
+ * 2. UNORDERED: The RDD output is always the same data set but the order can be different
+ *               after a rerun.
+ * 3. INDETERMINATE. The RDD output can be different after a rerun.
+ *
+ * Note that, the output of an RDD usually relies on the parent RDDs. When the parent RDD's output
+ * is INDETERMINATE, it's very likely the RDD's output is also INDETERMINATE.
+ */
+private[spark] object DeterministicLevel extends Enumeration {
+  val DETERMINATE, UNORDERED, INDETERMINATE = Value
 }

@@ -57,6 +57,14 @@ package object config {
     .booleanConf
     .createWithDefault(false)
 
+  private[spark] val POPULATE_HADOOP_CLASSPATH = ConfigBuilder("spark.yarn.populateHadoopClasspath")
+    .doc("Whether to populate Hadoop classpath from `yarn.application.classpath` and " +
+      "`mapreduce.application.classpath` Note that if this is set to `false`, it requires " +
+      "a `with-Hadoop` Spark distribution that bundles Hadoop runtime or user has to provide " +
+      "a Hadoop installation separately.")
+    .booleanConf
+    .createWithDefault(true)
+
   private[spark] val GATEWAY_ROOT_PATH = ConfigBuilder("spark.yarn.config.gatewayPath")
     .doc("Root of configuration paths that is present on gateway nodes, and will be replaced " +
       "with the corresponding path in cluster machines.")
@@ -191,6 +199,12 @@ package object config {
     .stringConf
     .toSequence
     .createWithDefault(Nil)
+
+  private[spark] val AM_FINAL_MSG_LIMIT = ConfigBuilder("spark.yarn.am.finalMessageLimit")
+    .doc("The limit size of final diagnostic message for our ApplicationMaster to unregister from" +
+      " the ResourceManager.")
+    .bytesConf(ByteUnit.BYTE)
+    .createWithDefaultString("1m")
 
   /* Client-mode AM configuration. */
 

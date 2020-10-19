@@ -129,7 +129,7 @@ class ParquetFileFormat
       conf.setEnum(ParquetOutputFormat.JOB_SUMMARY_LEVEL, JobSummaryLevel.NONE)
     }
 
-    if (ParquetOutputFormat.getJobSummaryLevel(conf) == JobSummaryLevel.NONE
+    if (ParquetOutputFormat.getJobSummaryLevel(conf) != JobSummaryLevel.NONE
       && !classOf[ParquetOutputCommitter].isAssignableFrom(committerClass)) {
       // output summary is requested, but the class is not a Parquet Committer
       logWarning(s"Committer $committerClass is not a ParquetOutputCommitter and cannot" +
@@ -238,7 +238,7 @@ class ParquetFileFormat
             .orElse(filesByType.data.headOption)
             .toSeq
       }
-    ParquetFileFormat.mergeSchemasInParallel(filesToTouch, sparkSession)
+    ParquetFileFormat.mergeSchemasInParallel(parameters, filesToTouch, sparkSession)
   }
 
   case class FileTypes(
@@ -347,6 +347,7 @@ class ParquetFileFormat
     val pushDownDecimal = sqlConf.parquetFilterPushDownDecimal
     val pushDownStringStartWith = sqlConf.parquetFilterPushDownStringStartWith
     val pushDownInFilterThreshold = sqlConf.parquetFilterPushDownInFilterThreshold
+    val isCaseSensitive = sqlConf.caseSensitiveAnalysis
 
     (file: PartitionedFile) => {
       assert(file.partitionValues.numFields == partitionSchema.size)
@@ -372,7 +373,7 @@ class ParquetFileFormat
       val pushed = if (enableParquetFilterPushDown) {
         val parquetSchema = footerFileMetaData.getSchema
         val parquetFilters = new ParquetFilters(pushDownDate, pushDownTimestamp, pushDownDecimal,
-          pushDownStringStartWith, pushDownInFilterThreshold)
+          pushDownStringStartWith, pushDownInFilterThreshold, isCaseSensitive)
         filters
           // Collects all converted Parquet filter predicates. Notice that not all predicates can be
           // converted (`ParquetFilters.createFilter` returns an `Option`). That's why a `flatMap`
@@ -568,11 +569,13 @@ object ParquetFileFormat extends Logging {
    *     S3 nodes).
    */
   def mergeSchemasInParallel(
+      parameters: Map[String, String],
       filesToTouch: Seq[FileStatus],
       sparkSession: SparkSession): Option[StructType] = {
     val assumeBinaryIsString = sparkSession.sessionState.conf.isParquetBinaryAsString
     val assumeInt96IsTimestamp = sparkSession.sessionState.conf.isParquetINT96AsTimestamp
-    val serializedConf = new SerializableConfiguration(sparkSession.sessionState.newHadoopConf())
+    val serializedConf = new SerializableConfiguration(
+      sparkSession.sessionState.newHadoopConfWithOptions(parameters))
 
     // !! HACK ALERT !!
     //

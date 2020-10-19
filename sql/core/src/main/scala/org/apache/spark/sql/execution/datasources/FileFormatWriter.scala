@@ -162,15 +162,17 @@ object FileFormatWriter extends Logging {
         rdd
       }
 
+      val jobIdInstant = new Date().getTime
       val ret = new Array[WriteTaskResult](rddWithNonEmptyPartitions.partitions.length)
       sparkSession.sparkContext.runJob(
         rddWithNonEmptyPartitions,
         (taskContext: TaskContext, iter: Iterator[InternalRow]) => {
           executeTask(
             description = description,
+            jobIdInstant = jobIdInstant,
             sparkStageId = taskContext.stageId(),
             sparkPartitionId = taskContext.partitionId(),
-            sparkAttemptNumber = taskContext.attemptNumber(),
+            sparkAttemptNumber = taskContext.taskAttemptId().toInt & Integer.MAX_VALUE,
             committer,
             iterator = iter)
         },
@@ -183,15 +185,15 @@ object FileFormatWriter extends Logging {
       val commitMsgs = ret.map(_.commitMsg)
 
       committer.commitJob(job, commitMsgs)
-      logInfo(s"Job ${job.getJobID} committed.")
+      logInfo(s"Write Job ${description.uuid} committed.")
 
       processStats(description.statsTrackers, ret.map(_.summary.stats))
-      logInfo(s"Finished processing stats for job ${job.getJobID}.")
+      logInfo(s"Finished processing stats for write job ${description.uuid}.")
 
       // return a set of all the partition paths that were updated during this job
       ret.map(_.summary.updatedPartitions).reduceOption(_ ++ _).getOrElse(Set.empty)
     } catch { case cause: Throwable =>
-      logError(s"Aborting job ${job.getJobID}.", cause)
+      logError(s"Aborting job ${description.uuid}.", cause)
       committer.abortJob(job)
       throw new SparkException("Job aborted.", cause)
     }
@@ -200,13 +202,14 @@ object FileFormatWriter extends Logging {
   /** Writes data out in a single Spark task. */
   private def executeTask(
       description: WriteJobDescription,
+      jobIdInstant: Long,
       sparkStageId: Int,
       sparkPartitionId: Int,
       sparkAttemptNumber: Int,
       committer: FileCommitProtocol,
       iterator: Iterator[InternalRow]): WriteTaskResult = {
 
-    val jobId = SparkHadoopWriterUtils.createJobID(new Date, sparkStageId)
+    val jobId = SparkHadoopWriterUtils.createJobID(new Date(jobIdInstant), sparkStageId)
     val taskId = new TaskID(jobId, TaskType.MAP, sparkPartitionId)
     val taskAttemptId = new TaskAttemptID(taskId, sparkAttemptNumber)
 

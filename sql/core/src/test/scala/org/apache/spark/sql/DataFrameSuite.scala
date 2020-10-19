@@ -22,6 +22,8 @@ import java.nio.charset.StandardCharsets
 import java.sql.{Date, Timestamp}
 import java.util.UUID
 
+import scala.collection.mutable.WrappedArray
+import scala.reflect.runtime.universe.TypeTag
 import scala.util.Random
 
 import org.scalatest.Matchers._
@@ -29,7 +31,9 @@ import org.scalatest.Matchers._
 import org.apache.spark.SparkException
 import org.apache.spark.scheduler.{SparkListener, SparkListenerJobEnd}
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.catalyst.encoders.ExpressionEncoder
 import org.apache.spark.sql.catalyst.expressions.Uuid
+import org.apache.spark.sql.catalyst.optimizer.ConvertToLocalRelation
 import org.apache.spark.sql.catalyst.plans.logical.{Filter, OneRowRelation, Union}
 import org.apache.spark.sql.execution.{FilterExec, QueryExecution, WholeStageCodegenExec}
 import org.apache.spark.sql.execution.aggregate.HashAggregateExec
@@ -40,6 +44,7 @@ import org.apache.spark.sql.test.{ExamplePoint, ExamplePointUDT, SharedSQLContex
 import org.apache.spark.sql.test.SQLTestData.{NullInts, NullStrings, TestData2}
 import org.apache.spark.sql.types._
 import org.apache.spark.util.Utils
+import org.apache.spark.util.random.XORShiftRandom
 
 class DataFrameSuite extends QueryTest with SharedSQLContext {
   import testImplicits._
@@ -1729,10 +1734,8 @@ class DataFrameSuite extends QueryTest with SharedSQLContext {
   }
 
   test("SPARK-9083: sort with non-deterministic expressions") {
-    import org.apache.spark.util.random.XORShiftRandom
-
     val seed = 33
-    val df = (1 to 100).map(Tuple1.apply).toDF("i")
+    val df = (1 to 100).map(Tuple1.apply).toDF("i").repartition(1)
     val random = new XORShiftRandom(seed)
     val expected = (1 to 100).map(_ -> random.nextDouble()).sortBy(_._2).map(_._1)
     val actual = df.sort(rand(seed)).collect().map(_.getInt(0))
@@ -2549,17 +2552,174 @@ class DataFrameSuite extends QueryTest with SharedSQLContext {
 
       val df = spark.read.json(path.getCanonicalPath)
       assert(df.columns === Array("i", "p"))
+      spark.sparkContext.listenerBus.waitUntilEmpty(10000)
       assert(numJobs == 1)
     }
   }
 
-  test("SPARK-23034 show rdd names in RDD scan nodes") {
-    val rddWithName = spark.sparkContext.parallelize(Row(1, "abc") :: Nil).setName("testRdd")
-    val df2 = spark.createDataFrame(rddWithName, StructType.fromDDL("c0 int, c1 string"))
-    val output2 = new java.io.ByteArrayOutputStream()
-    Console.withOut(output2) {
-      df2.explain(extended = false)
+  test("SPARK-25368 Incorrect predicate pushdown returns wrong result") {
+    def check(newCol: Column, filter: Column, result: Seq[Row]): Unit = {
+      val df1 = spark.createDataFrame(Seq(
+        (1, 1)
+      )).toDF("a", "b").withColumn("c", newCol)
+
+      val df2 = df1.union(df1).withColumn("d", spark_partition_id).filter(filter)
+      checkAnswer(df2, result)
     }
-    assert(output2.toString.contains("Scan ExistingRDD testRdd"))
+
+    check(lit(null).cast("int"), $"c".isNull, Seq(Row(1, 1, null, 0), Row(1, 1, null, 1)))
+    check(lit(null).cast("int"), $"c".isNotNull, Seq())
+    check(lit(2).cast("int"), $"c".isNull, Seq())
+    check(lit(2).cast("int"), $"c".isNotNull, Seq(Row(1, 1, 2, 0), Row(1, 1, 2, 1)))
+    check(lit(2).cast("int"), $"c" === 2, Seq(Row(1, 1, 2, 0), Row(1, 1, 2, 1)))
+    check(lit(2).cast("int"), $"c" =!= 2, Seq())
+  }
+
+  test("SPARK-25402 Null handling in BooleanSimplification") {
+    val schema = StructType.fromDDL("a boolean, b int")
+    val rows = Seq(Row(null, 1))
+
+    val rdd = sparkContext.parallelize(rows)
+    val df = spark.createDataFrame(rdd, schema)
+
+    checkAnswer(df.where("(NOT a) OR a"), Seq.empty)
+  }
+
+  test("SPARK-25714 Null handling in BooleanSimplification") {
+    withSQLConf(SQLConf.OPTIMIZER_EXCLUDED_RULES.key -> ConvertToLocalRelation.ruleName) {
+      val df = Seq(("abc", 1), (null, 3)).toDF("col1", "col2")
+      checkAnswer(
+        df.filter("col1 = 'abc' OR (col1 != 'abc' AND col2 == 3)"),
+        Row ("abc", 1))
+    }
+  }
+
+  test("SPARK-25816 ResolveReferences works with nested extractors") {
+    val df = Seq((1, Map(1 -> "a")), (2, Map(2 -> "b"))).toDF("key", "map")
+    val swappedDf = df.select($"key".as("map"), $"map".as("key"))
+
+    checkAnswer(swappedDf.filter($"key"($"map") > "a"), Row(2, Map(2 -> "b")))
+  }
+
+  test("SPARK-26057: attribute deduplication on already analyzed plans") {
+    withTempView("a", "b", "v") {
+      val df1 = Seq(("1-1", 6)).toDF("id", "n")
+      df1.createOrReplaceTempView("a")
+      val df3 = Seq("1-1").toDF("id")
+      df3.createOrReplaceTempView("b")
+      spark.sql(
+        """
+          |SELECT a.id, n as m
+          |FROM a
+          |WHERE EXISTS(
+          |  SELECT 1
+          |  FROM b
+          |  WHERE b.id = a.id)
+        """.stripMargin).createOrReplaceTempView("v")
+      val res = spark.sql(
+        """
+          |SELECT a.id, n, m
+          |  FROM a
+          |  LEFT OUTER JOIN v ON v.id = a.id
+        """.stripMargin)
+      checkAnswer(res, Row("1-1", 6, 6))
+    }
+  }
+
+  test("SPARK-27671: Fix analysis exception when casting null in nested field in struct") {
+    val df = sql("SELECT * FROM VALUES (('a', (10, null))), (('b', (10, 50))), " +
+      "(('c', null)) AS tab(x, y)")
+    checkAnswer(df, Row("a", Row(10, null)) :: Row("b", Row(10, 50)) :: Row("c", null) :: Nil)
+
+    val cast = sql("SELECT cast(struct(1, null) AS struct<a:int,b:int>)")
+    checkAnswer(cast, Row(Row(1, null)) :: Nil)
+  }
+
+  test("sample should not duplicated the input data") {
+    val df1 = spark.range(10).select($"id" as "id1", $"id" % 5 as "key1")
+    val df2 = spark.range(10).select($"id" as "id2", $"id" % 5 as "key2")
+    val sampled = df1.join(df2, $"key1" === $"key2")
+      .sample(0.5, 42)
+      .select("id1", "id2")
+    val idTuples = sampled.collect().map(row => row.getLong(0) -> row.getLong(1))
+    assert(idTuples.length == idTuples.toSet.size)
+  }
+
+  test("SPARK-30811: CTE should not cause stack overflow when " +
+    "it refers to non-existent table with same name") {
+    val e = intercept[AnalysisException] {
+      sql("WITH t AS (SELECT 1 FROM nonexist.t) SELECT * FROM t")
+    }
+    assert(e.getMessage.contains("Table or view not found:"))
+  }
+
+  test("SPARK-31552: array encoder with different types") {
+    // primitives
+    val booleans = Array(true, false)
+    checkAnswer(Seq(booleans).toDF(), Row(booleans))
+
+    val bytes = Array(1.toByte, 2.toByte)
+    checkAnswer(Seq(bytes).toDF(), Row(bytes))
+    val shorts = Array(1.toShort, 2.toShort)
+    checkAnswer(Seq(shorts).toDF(), Row(shorts))
+    val ints = Array(1, 2)
+    checkAnswer(Seq(ints).toDF(), Row(ints))
+    val longs = Array(1L, 2L)
+    checkAnswer(Seq(longs).toDF(), Row(longs))
+
+    val floats = Array(1.0F, 2.0F)
+    checkAnswer(Seq(floats).toDF(), Row(floats))
+    val doubles = Array(1.0D, 2.0D)
+    checkAnswer(Seq(doubles).toDF(), Row(doubles))
+
+    val strings = Array("2020-04-24", "2020-04-25")
+    checkAnswer(Seq(strings).toDF(), Row(strings))
+
+    // tuples
+    val decOne = Decimal(1, 38, 18)
+    val decTwo = Decimal(2, 38, 18)
+    val tuple1 = (1, 2.2, "3.33", decOne, Date.valueOf("2012-11-22"))
+    val tuple2 = (2, 3.3, "4.44", decTwo, Date.valueOf("2022-11-22"))
+    checkAnswer(Seq(Array(tuple1, tuple2)).toDF(), Seq(Seq(tuple1, tuple2)).toDF())
+
+    // case classes
+    val gbks = Array(GroupByKey(1, 2), GroupByKey(4, 5))
+    checkAnswer(Seq(gbks).toDF(), Row(Array(Row(1, 2), Row(4, 5))))
+
+    // We can move this implicit def to `SQLImplicits` when we eventually make fully
+    // support for array encoder like Seq and Set
+    // For now cases below, decimal/datetime/interval/binary/nested types, etc,
+    // are not supported by array
+    implicit def newArrayEncoder[T <: Array[_] : TypeTag]: Encoder[T] = ExpressionEncoder()
+
+    // decimals
+    val decSpark = Array(decOne, decTwo)
+    val decScala = decSpark.map(_.toBigDecimal)
+    val decJava = decSpark.map(_.toJavaBigDecimal)
+    checkAnswer(Seq(decSpark).toDF(), Row(decJava))
+    checkAnswer(Seq(decScala).toDF(), Row(decJava))
+    checkAnswer(Seq(decJava).toDF(), Row(decJava))
+
+    // datetimes
+    val dates = strings.map(Date.valueOf)
+    checkAnswer(Seq(dates).toDF(), Row(dates))
+
+    val timestamps =
+      Array(Timestamp.valueOf("2020-04-24 12:34:56"), Timestamp.valueOf("2020-04-24 11:22:33"))
+    checkAnswer(Seq(timestamps).toDF(), Row(timestamps))
+
+    // binary
+    val bins = Array(Array(1.toByte), Array(2.toByte), Array(3.toByte), Array(4.toByte))
+
+    val binsRes = Seq(bins).toDF().head().get(0).asInstanceOf[WrappedArray[Array[Byte]]]
+    assert(binsRes.zip(bins).forall { case (a, b) => a.diff(b).isEmpty})
+
+    // nested
+    val nestedIntArray = Array(Array(1), Array(2))
+    checkAnswer(Seq(nestedIntArray).toDF(), Row(nestedIntArray.map(wrapIntArray)))
+    val nestedDecArray = Array(decSpark)
+    checkAnswer(Seq(nestedDecArray).toDF(), Row(Array(wrapRefArray(decJava))))
   }
 }
+
+case class GroupByKey(a: Int, b: Int)

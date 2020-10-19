@@ -193,6 +193,7 @@ class LSHModel(JavaModel):
                  "datasetA" and "datasetB", and a column "distCol" is added to show the distance
                  between each pair.
         """
+        threshold = TypeConverters.toFloat(threshold)
         return self._call_java("approxSimilarityJoin", datasetA, datasetB, threshold, distCol)
 
 
@@ -207,8 +208,8 @@ class BucketedRandomProjectionLSH(JavaEstimator, LSHParams, HasInputCol, HasOutp
     distance space. The output will be vectors of configurable dimension. Hash values in the same
     dimension are calculated by the same hash function.
 
-    .. seealso:: `Stable Distributions \
-    <https://en.wikipedia.org/wiki/Locality-sensitive_hashing#Stable_distributions>`_
+    .. seealso:: `Stable Distributions
+        <https://en.wikipedia.org/wiki/Locality-sensitive_hashing#Stable_distributions>`_
     .. seealso:: `Hashing for Similarity Search: A Survey <https://arxiv.org/abs/1408.2927>`_
 
     >>> from pyspark.ml.linalg import Vectors
@@ -231,6 +232,16 @@ class BucketedRandomProjectionLSH(JavaEstimator, LSHParams, HasInputCol, HasOutp
     >>> model.approxNearestNeighbors(df2, Vectors.dense([1.0, 2.0]), 1).collect()
     [Row(id=4, features=DenseVector([2.0, 2.0]), hashes=[DenseVector([1.0])], distCol=1.0)]
     >>> model.approxSimilarityJoin(df, df2, 3.0, distCol="EuclideanDistance").select(
+    ...     col("datasetA.id").alias("idA"),
+    ...     col("datasetB.id").alias("idB"),
+    ...     col("EuclideanDistance")).show()
+    +---+---+-----------------+
+    |idA|idB|EuclideanDistance|
+    +---+---+-----------------+
+    |  3|  6| 2.23606797749979|
+    +---+---+-----------------+
+    ...
+    >>> model.approxSimilarityJoin(df, df2, 3, distCol="EuclideanDistance").select(
     ...     col("datasetA.id").alias("idA"),
     ...     col("datasetB.id").alias("idB"),
     ...     col("EuclideanDistance")).show()
@@ -303,7 +314,7 @@ class BucketedRandomProjectionLSH(JavaEstimator, LSHParams, HasInputCol, HasOutp
 
 
 class BucketedRandomProjectionLSHModel(LSHModel, JavaMLReadable, JavaMLWritable):
-    """
+    r"""
     .. note:: Experimental
 
     Model fitted by :py:class:`BucketedRandomProjectionLSH`, where multiple random vectors are
@@ -653,8 +664,8 @@ class DCT(JavaTransformer, HasInputCol, HasOutputCol, JavaMLReadable, JavaMLWrit
     The return vector is scaled such that the transform matrix is
     unitary (aka scaled DCT-II).
 
-    .. seealso:: `More information on Wikipedia \
-    <https://en.wikipedia.org/wiki/Discrete_cosine_transform#DCT-II Wikipedia>`_.
+    .. seealso:: `More information on Wikipedia
+        <https://en.wikipedia.org/wiki/Discrete_cosine_transform#DCT-II Wikipedia>`_.
 
     >>> from pyspark.ml.linalg import Vectors
     >>> df1 = spark.createDataFrame([(Vectors.dense([5.0, 8.0, 6.0]),)], ["vec"])
@@ -1353,7 +1364,7 @@ class MinHashLSH(JavaEstimator, LSHParams, HasInputCol, HasOutputCol, HasSeed,
 
 
 class MinHashLSHModel(LSHModel, JavaMLReadable, JavaMLWritable):
-    """
+    r"""
     .. note:: Experimental
 
     Model produced by :py:class:`MinHashLSH`, where where multiple hash functions are stored. Each
@@ -1362,8 +1373,8 @@ class MinHashLSHModel(LSHModel, JavaMLReadable, JavaMLWritable):
     :math:`h_i(x) = ((x \cdot a_i + b_i) \mod prime)` This hash family is approximately min-wise
     independent according to the reference.
 
-    .. seealso:: Tom Bohman, Colin Cooper, and Alan Frieze. "Min-wise independent linear \
-    permutations." Electronic Journal of Combinatorics 7 (2000): R26.
+    .. seealso:: Tom Bohman, Colin Cooper, and Alan Frieze. "Min-wise independent linear
+        permutations." Electronic Journal of Combinatorics 7 (2000): R26.
 
     .. versionadded:: 2.2.0
     """

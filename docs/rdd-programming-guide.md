@@ -839,7 +839,7 @@ The most common ones are distributed "shuffle" operations, such as grouping or a
 by a key.
 
 In Scala, these operations are automatically available on RDDs containing
-[Tuple2](http://www.scala-lang.org/api/{{site.SCALA_VERSION}}/index.html#scala.Tuple2) objects
+[Tuple2](https://www.scala-lang.org/api/{{site.SCALA_VERSION}}/scala/Tuple2.html) objects
 (the built-in tuples in the language, created by simply writing `(a, b)`). The key-value pair operations are available in the
 [PairRDDFunctions](api/scala/index.html#org.apache.spark.rdd.PairRDDFunctions) class,
 which automatically wraps around an RDD of tuples.
@@ -859,7 +859,7 @@ We could also use `counts.sortByKey()`, for example, to sort the pairs alphabeti
 **Note:** when using custom objects as the key in key-value pair operations, you must be sure that a
 custom `equals()` method is accompanied with a matching `hashCode()` method.  For full details, see
 the contract outlined in the [Object.hashCode()
-documentation](http://docs.oracle.com/javase/7/docs/api/java/lang/Object.html#hashCode()).
+documentation](https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html#hashCode--).
 
 </div>
 
@@ -871,7 +871,7 @@ The most common ones are distributed "shuffle" operations, such as grouping or a
 by a key.
 
 In Java, key-value pairs are represented using the
-[scala.Tuple2](http://www.scala-lang.org/api/{{site.SCALA_VERSION}}/index.html#scala.Tuple2) class
+[scala.Tuple2](https://www.scala-lang.org/api/{{site.SCALA_VERSION}}/scala/Tuple2.html) class
 from the Scala standard library. You can simply call `new Tuple2(a, b)` to create a tuple, and access
 its fields later with `tuple._1()` and `tuple._2()`.
 
@@ -896,7 +896,7 @@ We could also use `counts.sortByKey()`, for example, to sort the pairs alphabeti
 **Note:** when using custom objects as the key in key-value pair operations, you must be sure that a
 custom `equals()` method is accompanied with a matching `hashCode()` method.  For full details, see
 the contract outlined in the [Object.hashCode()
-documentation](http://docs.oracle.com/javase/7/docs/api/java/lang/Object.html#hashCode()).
+documentation](https://docs.oracle.com/javase/8/docs/api/java/lang/Object.html#hashCode--).
 
 </div>
 
@@ -1464,6 +1464,10 @@ jsc.sc().register(myVectorAcc, "MyVectorAcc1");
 {% endhighlight %}
 
 Note that, when programmers define their own type of AccumulatorV2, the resulting type can be different than that of the elements added.
+
+*Warning*: When a Spark task finishes, Spark will try to merge the accumulated updates in this task to an accumulator.
+If it fails, Spark will ignore the failure and still mark the task successful and continue to run other tasks. Hence,
+a buggy accumulator will not impact a Spark job, but it may not get updated correctly although a Spark job is successful.
 
 </div>
 

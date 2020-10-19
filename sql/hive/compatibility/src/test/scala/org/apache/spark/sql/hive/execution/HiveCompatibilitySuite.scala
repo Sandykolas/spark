@@ -26,10 +26,12 @@ import org.apache.spark.sql.catalyst.rules.RuleExecutor
 import org.apache.spark.sql.hive.HiveUtils
 import org.apache.spark.sql.hive.test.TestHive
 import org.apache.spark.sql.internal.SQLConf
+import org.apache.spark.tags.SlowHiveTest
 
 /**
  * Runs the test cases that are included in the hive distribution.
  */
+@SlowHiveTest
 class HiveCompatibilitySuite extends HiveQueryFileTest with BeforeAndAfter {
   // TODO: bundle in jar files... get from classpath
   private lazy val hiveQueryDir = TestHive.getHiveFile(
@@ -40,7 +42,6 @@ class HiveCompatibilitySuite extends HiveQueryFileTest with BeforeAndAfter {
   private val originalColumnBatchSize = TestHive.conf.columnBatchSize
   private val originalInMemoryPartitionPruning = TestHive.conf.inMemoryPartitionPruning
   private val originalCrossJoinEnabled = TestHive.conf.crossJoinEnabled
-  private val originalLimitFlatGlobalLimit = TestHive.conf.limitFlatGlobalLimit
   private val originalSessionLocalTimeZone = TestHive.conf.sessionLocalTimeZone
 
   def testCases: Seq[(String, File)] = {
@@ -60,8 +61,6 @@ class HiveCompatibilitySuite extends HiveQueryFileTest with BeforeAndAfter {
     TestHive.setConf(SQLConf.IN_MEMORY_PARTITION_PRUNING, true)
     // Ensures that cross joins are enabled so that we can test them
     TestHive.setConf(SQLConf.CROSS_JOINS_ENABLED, true)
-    // Ensure that limit operation returns rows in the same order as Hive
-    TestHive.setConf(SQLConf.LIMIT_FLAT_GLOBAL_LIMIT, false)
     // Fix session local timezone to America/Los_Angeles for those timezone sensitive tests
     // (timestamp_*)
     TestHive.setConf(SQLConf.SESSION_LOCAL_TIMEZONE, "America/Los_Angeles")
@@ -76,7 +75,6 @@ class HiveCompatibilitySuite extends HiveQueryFileTest with BeforeAndAfter {
       TestHive.setConf(SQLConf.COLUMN_BATCH_SIZE, originalColumnBatchSize)
       TestHive.setConf(SQLConf.IN_MEMORY_PARTITION_PRUNING, originalInMemoryPartitionPruning)
       TestHive.setConf(SQLConf.CROSS_JOINS_ENABLED, originalCrossJoinEnabled)
-      TestHive.setConf(SQLConf.LIMIT_FLAT_GLOBAL_LIMIT, originalLimitFlatGlobalLimit)
       TestHive.setConf(SQLConf.SESSION_LOCAL_TIMEZONE, originalSessionLocalTimeZone)
 
       // For debugging dump some statistics about how much time was spent in various optimizer rules

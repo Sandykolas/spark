@@ -36,7 +36,7 @@ import org.apache.spark.deploy.DeployMessages._
 import org.apache.spark.deploy.ExternalShuffleService
 import org.apache.spark.deploy.master.{DriverState, Master}
 import org.apache.spark.deploy.worker.ui.WorkerWebUI
-import org.apache.spark.internal.Logging
+import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.metrics.MetricsSystem
 import org.apache.spark.rpc._
 import org.apache.spark.util.{SparkUncaughtExceptionHandler, ThreadUtils, Utils}
@@ -452,27 +452,32 @@ private[deploy] class Worker(
       // rpcEndpoint.
       // Copy ids so that it can be used in the cleanup thread.
       val appIds = (executors.values.map(_.appId) ++ drivers.values.map(_.driverId)).toSet
-      val cleanupFuture = concurrent.Future {
-        val appDirs = workDir.listFiles()
-        if (appDirs == null) {
-          throw new IOException("ERROR: Failed to list files in " + appDirs)
-        }
-        appDirs.filter { dir =>
-          // the directory is used by an application - check that the application is not running
-          // when cleaning up
-          val appIdFromDir = dir.getName
-          val isAppStillRunning = appIds.contains(appIdFromDir)
-          dir.isDirectory && !isAppStillRunning &&
-          !Utils.doesDirectoryContainAnyNewFiles(dir, APP_DATA_RETENTION_SECONDS)
-        }.foreach { dir =>
-          logInfo(s"Removing directory: ${dir.getPath}")
-          Utils.deleteRecursively(dir)
-        }
-      }(cleanupThreadExecutor)
+      try {
+        val cleanupFuture: concurrent.Future[Unit] = concurrent.Future {
+          val appDirs = workDir.listFiles()
+          if (appDirs == null) {
+            throw new IOException("ERROR: Failed to list files in " + appDirs)
+          }
+          appDirs.filter { dir =>
+            // the directory is used by an application - check that the application is not running
+            // when cleaning up
+            val appIdFromDir = dir.getName
+            val isAppStillRunning = appIds.contains(appIdFromDir)
+            dir.isDirectory && !isAppStillRunning &&
+              !Utils.doesDirectoryContainAnyNewFiles(dir, APP_DATA_RETENTION_SECONDS)
+          }.foreach { dir =>
+            logInfo(s"Removing directory: ${dir.getPath}")
+            Utils.deleteRecursively(dir)
+          }
+        }(cleanupThreadExecutor)
 
-      cleanupFuture.failed.foreach(e =>
-        logError("App dir cleanup failed: " + e.getMessage, e)
-      )(cleanupThreadExecutor)
+        cleanupFuture.failed.foreach(e =>
+          logError("App dir cleanup failed: " + e.getMessage, e)
+        )(cleanupThreadExecutor)
+      } catch {
+        case _: RejectedExecutionException if cleanupThreadExecutor.isShutdown =>
+          logWarning("Failed to cleanup work dir as executor pool was shutdown")
+      }
 
     case MasterChanged(masterRef, masterWebUiUrl) =>
       logInfo("Master has changed, new master is at " + masterRef.address.toSparkURL)
@@ -635,15 +640,20 @@ private[deploy] class Worker(
     val shouldCleanup = finishedApps.contains(id) && !executors.values.exists(_.appId == id)
     if (shouldCleanup) {
       finishedApps -= id
-      appDirectories.remove(id).foreach { dirList =>
-        concurrent.Future {
-          logInfo(s"Cleaning up local directories for application $id")
-          dirList.foreach { dir =>
-            Utils.deleteRecursively(new File(dir))
-          }
-        }(cleanupThreadExecutor).failed.foreach(e =>
-          logError(s"Clean up app dir $dirList failed: ${e.getMessage}", e)
-        )(cleanupThreadExecutor)
+      try {
+        appDirectories.remove(id).foreach { dirList =>
+          concurrent.Future {
+            logInfo(s"Cleaning up local directories for application $id")
+            dirList.foreach { dir =>
+              Utils.deleteRecursively(new File(dir))
+            }
+          }(cleanupThreadExecutor).failed.foreach(e =>
+            logError(s"Clean up app dir $dirList failed: ${e.getMessage}", e)
+          )(cleanupThreadExecutor)
+        }
+      } catch {
+        case _: RejectedExecutionException if cleanupThreadExecutor.isShutdown =>
+          logWarning("Failed to cleanup application as executor pool was shutdown")
       }
       shuffleService.applicationRemoved(id)
     }
@@ -773,7 +783,7 @@ private[deploy] object Worker extends Logging {
     // bound, we may launch no more than one external shuffle service on each host.
     // When this happens, we should give explicit reason of failure instead of fail silently. For
     // more detail see SPARK-20989.
-    val externalShuffleServiceEnabled = conf.getBoolean("spark.shuffle.service.enabled", false)
+    val externalShuffleServiceEnabled = conf.get(config.SHUFFLE_SERVICE_ENABLED)
     val sparkWorkerInstances = scala.sys.env.getOrElse("SPARK_WORKER_INSTANCES", "1").toInt
     require(externalShuffleServiceEnabled == false || sparkWorkerInstances <= 1,
       "Starting multiple workers on one host is failed because we may launch no more than one " +

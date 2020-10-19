@@ -17,7 +17,11 @@
 
 package org.apache.spark.sql
 
+import java.math.BigDecimal
+
+import org.apache.spark.SparkException
 import org.apache.spark.sql.api.java._
+import org.apache.spark.sql.catalyst.encoders.OuterScopes
 import org.apache.spark.sql.catalyst.plans.logical.Project
 import org.apache.spark.sql.execution.QueryExecution
 import org.apache.spark.sql.execution.columnar.InMemoryRelation
@@ -392,5 +396,55 @@ class UDFSuite extends QueryTest with SharedSQLContext {
       comparePlans(df.logicalPlan, plan)
       checkAnswer(df, Seq(Row("12"), Row("24"), Row("3null"), Row(null)))
     }
+  }
+
+  test("SPARK-25044 Verify null input handling for primitive types - with udf()") {
+    val udf1 = udf((x: Long, y: Any) => x * 2 + (if (y == null) 1 else 0))
+    val df = spark.range(0, 3).toDF("a")
+      .withColumn("b", udf1($"a", lit(null)))
+      .withColumn("c", udf1(lit(null), $"a"))
+
+    checkAnswer(
+      df,
+      Seq(
+        Row(0, 1, null),
+        Row(1, 3, null),
+        Row(2, 5, null)))
+  }
+
+  test("SPARK-25044 Verify null input handling for primitive types - with udf.register") {
+    withTable("t") {
+      Seq((null, new Integer(1), "x"), ("M", null, "y"), ("N", new Integer(3), null))
+        .toDF("a", "b", "c").write.format("json").saveAsTable("t")
+      spark.udf.register("f", (a: String, b: Int, c: Any) => a + b + c)
+      val df = spark.sql("SELECT f(a, b, c) FROM t")
+      checkAnswer(df, Seq(Row("null1x"), Row(null), Row("N3null")))
+    }
+  }
+
+  object MalformedClassObject extends Serializable {
+    class MalformedNonPrimitiveFunction extends (String => Int) with Serializable {
+      override def apply(v1: String): Int = v1.toInt / 0
+    }
+
+    class MalformedPrimitiveFunction extends (Int => Int) with Serializable {
+      override def apply(v1: Int): Int = v1 / 0
+    }
+  }
+
+  test("SPARK-32238: Use Utils.getSimpleName to avoid hitting Malformed class name") {
+    OuterScopes.addOuterScope(MalformedClassObject)
+    val f1 = new MalformedClassObject.MalformedNonPrimitiveFunction()
+    val f2 = new MalformedClassObject.MalformedPrimitiveFunction()
+
+    val e1 = intercept[SparkException] {
+      Seq("20").toDF("col").select(udf(f1).apply(Column("col"))).collect()
+    }
+    assert(e1.getMessage.contains("UDFSuite$MalformedClassObject$MalformedNonPrimitiveFunction"))
+
+    val e2 = intercept[SparkException] {
+      Seq(20).toDF("col").select(udf(f2).apply(Column("col"))).collect()
+    }
+    assert(e2.getMessage.contains("UDFSuite$MalformedClassObject$MalformedPrimitiveFunction"))
   }
 }

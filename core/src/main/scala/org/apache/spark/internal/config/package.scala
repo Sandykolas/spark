@@ -21,6 +21,7 @@ import java.util.concurrent.TimeUnit
 
 import org.apache.spark.launcher.SparkLauncher
 import org.apache.spark.network.util.ByteUnit
+import org.apache.spark.unsafe.array.ByteArrayMethods
 import org.apache.spark.util.Utils
 
 package object config {
@@ -72,11 +73,16 @@ package object config {
   private[spark] val EVENT_LOG_OVERWRITE =
     ConfigBuilder("spark.eventLog.overwrite").booleanConf.createWithDefault(false)
 
-  private[spark] val EVENT_LOG_CALLSITE_FORM =
-    ConfigBuilder("spark.eventLog.callsite").stringConf.createWithDefault("short")
+  private[spark] val EVENT_LOG_CALLSITE_LONG_FORM =
+    ConfigBuilder("spark.eventLog.longForm.enabled").booleanConf.createWithDefault(false)
 
   private[spark] val EXECUTOR_CLASS_PATH =
     ConfigBuilder(SparkLauncher.EXECUTOR_EXTRA_CLASSPATH).stringConf.createOptional
+
+  private[spark] val EXECUTOR_HEARTBEAT_INTERVAL =
+    ConfigBuilder("spark.executor.heartbeatInterval")
+      .timeConf(TimeUnit.MILLISECONDS)
+      .createWithDefaultString("10s")
 
   private[spark] val EXECUTOR_JAVA_OPTIONS =
     ConfigBuilder(SparkLauncher.EXECUTOR_EXTRA_JAVA_OPTIONS).stringConf.createOptional
@@ -114,6 +120,10 @@ package object config {
     .checkValue(_ >= 0, "The off-heap memory size must not be negative")
     .createWithDefault(0)
 
+  private[spark] val PYSPARK_EXECUTOR_MEMORY = ConfigBuilder("spark.executor.pyspark.memory")
+    .bytesConf(ByteUnit.MiB)
+    .createOptional
+
   private[spark] val IS_PYTHON_APP = ConfigBuilder("spark.yarn.isPython").internal()
     .booleanConf.createWithDefault(false)
 
@@ -139,6 +149,9 @@ package object config {
 
   private[spark] val SHUFFLE_SERVICE_ENABLED =
     ConfigBuilder("spark.shuffle.service.enabled").booleanConf.createWithDefault(false)
+
+  private[spark] val SHUFFLE_SERVICE_PORT =
+    ConfigBuilder("spark.shuffle.service.port").intConf.createWithDefault(7337)
 
   private[spark] val KEYTAB = ConfigBuilder("spark.yarn.keytab")
     .doc("Location of user's keytab.")
@@ -232,7 +245,7 @@ package object config {
   private[spark] val LISTENER_BUS_EVENT_QUEUE_CAPACITY =
     ConfigBuilder("spark.scheduler.listenerbus.eventqueue.capacity")
       .intConf
-      .checkValue(_ > 0, "The capacity of listener bus event queue must not be negative")
+      .checkValue(_ > 0, "The capacity of listener bus event queue must be positive")
       .createWithDefault(10000)
 
   private[spark] val LISTENER_BUS_METRICS_MAX_LISTENER_CLASSES_TIMED =
@@ -380,8 +393,9 @@ package object config {
       .internal()
       .doc("The chunk size in bytes during writing out the bytes of ChunkedByteBuffer.")
       .bytesConf(ByteUnit.BYTE)
-      .checkValue(_ <= Int.MaxValue, "The chunk size during writing out the bytes of" +
-        " ChunkedByteBuffer should not larger than Int.MaxValue.")
+      .checkValue(_ <= ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH,
+        "The chunk size during writing out the bytes of ChunkedByteBuffer should" +
+          s" be less than or equal to ${ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH}.")
       .createWithDefault(64 * 1024 * 1024)
 
   private[spark] val CHECKPOINT_COMPRESS =
@@ -452,8 +466,9 @@ package object config {
         "otherwise specified. These buffers reduce the number of disk seeks and system calls " +
         "made in creating intermediate shuffle files.")
       .bytesConf(ByteUnit.KiB)
-      .checkValue(v => v > 0 && v <= Int.MaxValue / 1024,
-        s"The file buffer size must be greater than 0 and less than ${Int.MaxValue / 1024}.")
+      .checkValue(v => v > 0 && v <= ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH / 1024,
+        s"The file buffer size must be positive and less than or equal to" +
+          s" ${ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH / 1024}.")
       .createWithDefaultString("32k")
 
   private[spark] val SHUFFLE_UNSAFE_FILE_OUTPUT_BUFFER_SIZE =
@@ -461,8 +476,9 @@ package object config {
       .doc("The file system for this buffer size after each partition " +
         "is written in unsafe shuffle writer. In KiB unless otherwise specified.")
       .bytesConf(ByteUnit.KiB)
-      .checkValue(v => v > 0 && v <= Int.MaxValue / 1024,
-        s"The buffer size must be greater than 0 and less than ${Int.MaxValue / 1024}.")
+      .checkValue(v => v > 0 && v <= ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH / 1024,
+        s"The buffer size must be positive and less than or equal to" +
+          s" ${ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH / 1024}.")
       .createWithDefaultString("32k")
 
   private[spark] val SHUFFLE_DISK_WRITE_BUFFER_SIZE =
@@ -516,6 +532,12 @@ package object config {
       .doc("Value for HTTP Strict Transport Security Response Header")
       .stringConf
       .createOptional
+
+  private[spark] val UI_REQUEST_HEADER_SIZE =
+    ConfigBuilder("spark.ui.requestHeaderSize")
+      .doc("Value for HTTP request header size in bytes.")
+      .bytesConf(ByteUnit.BYTE)
+      .createWithDefaultString("8k")
 
   private[spark] val EXTRA_LISTENERS = ConfigBuilder("spark.extraListeners")
     .doc("Class names of listeners to add to SparkContext during initialization.")
@@ -573,7 +595,7 @@ package object config {
       .internal()
       .doc("For testing only, controls the size of chunks when memory mapping a file")
       .bytesConf(ByteUnit.BYTE)
-      .createWithDefault(Int.MaxValue)
+      .createWithDefault(ByteArrayMethods.MAX_ROUNDED_ARRAY_LENGTH)
 
   private[spark] val BARRIER_SYNC_TIMEOUT =
     ConfigBuilder("spark.barrier.sync.timeout")
@@ -584,6 +606,14 @@ package object config {
       .timeConf(TimeUnit.SECONDS)
       .checkValue(v => v > 0, "The value should be a positive time value.")
       .createWithDefaultString("365d")
+
+  private[spark] val UNSCHEDULABLE_TASKSET_TIMEOUT =
+    ConfigBuilder("spark.scheduler.blacklist.unschedulableTaskSetTimeout")
+      .doc("The timeout in seconds to wait to acquire a new executor and schedule a task " +
+        "before aborting a TaskSet which is unschedulable because of being completely blacklisted.")
+      .timeConf(TimeUnit.SECONDS)
+      .checkValue(v => v >= 0, "The value should be a non negative time value.")
+      .createWithDefault(120)
 
   private[spark] val BARRIER_MAX_CONCURRENT_TASKS_CHECK_INTERVAL =
     ConfigBuilder("spark.scheduler.barrier.maxConcurrentTasksCheck.interval")
@@ -611,4 +641,14 @@ package object config {
       .intConf
       .checkValue(v => v > 0, "The max failures should be a positive value.")
       .createWithDefault(40)
+
+  private[spark] val EXECUTOR_PLUGINS =
+    ConfigBuilder("spark.executor.plugins")
+      .doc("Comma-separated list of class names for \"plugins\" implementing " +
+        "org.apache.spark.ExecutorPlugin.  Plugins have the same privileges as any task " +
+        "in a Spark executor.  They can also interfere with task execution and fail in " +
+        "unexpected ways.  So be sure to only use this for trusted plugins.")
+      .stringConf
+      .toSequence
+      .createWithDefault(Nil)
 }

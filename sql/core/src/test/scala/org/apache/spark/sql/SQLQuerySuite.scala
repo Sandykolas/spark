@@ -27,6 +27,7 @@ import org.apache.spark.scheduler.{SparkListener, SparkListenerJobStart}
 import org.apache.spark.sql.catalyst.util.StringUtils
 import org.apache.spark.sql.execution.aggregate
 import org.apache.spark.sql.execution.aggregate.{HashAggregateExec, SortAggregateExec}
+import org.apache.spark.sql.execution.columnar.InMemoryTableScanExec
 import org.apache.spark.sql.execution.datasources.FilePartition
 import org.apache.spark.sql.execution.joins.{BroadcastHashJoinExec, CartesianProductExec, SortMergeJoinExec}
 import org.apache.spark.sql.functions._
@@ -522,15 +523,6 @@ class SQLQuerySuite extends QueryTest with SharedSQLContext {
 
   test("external sorting") {
     sortTest()
-  }
-
-  test("limit for skew dataframe") {
-    // Create a skew dataframe.
-    val df = testData.repartition(100).union(testData).limit(50)
-    // Because `rdd` of dataframe will add a `DeserializeToObject` on top of `GlobalLimit`,
-    // the `GlobalLimit` will not be replaced with `CollectLimit`. So we can test if `GlobalLimit`
-    // work on skew partitions.
-    assert(df.rdd.count() == 50L)
   }
 
   test("CTE feature") {
@@ -1944,7 +1936,7 @@ class SQLQuerySuite extends QueryTest with SharedSQLContext {
     // TODO: support subexpression elimination in whole stage codegen
     withSQLConf("spark.sql.codegen.wholeStage" -> "false") {
       // select from a table to prevent constant folding.
-      val df = sql("SELECT a, b from testData2 order by a, b limit 1")
+      val df = sql("SELECT a, b from testData2 limit 1")
       checkAnswer(df, Row(1, 1))
 
       checkAnswer(df.selectExpr("a + 1", "a + 1"), Row(2, 2))
@@ -2857,6 +2849,258 @@ class SQLQuerySuite extends QueryTest with SharedSQLContext {
     val ds = List(Foo(Some("bar"))).toDS
     val result = ds.flatMap(_.bar).distinct
     result.rdd.isEmpty
+  }
+
+  test("SPARK-25454: decimal division with negative scale") {
+    // TODO: completely fix this issue even when LITERAL_PRECISE_PRECISION is true.
+    withSQLConf(SQLConf.LITERAL_PICK_MINIMUM_PRECISION.key -> "false") {
+      checkAnswer(sql("select 26393499451 / (1e6 * 1000)"), Row(BigDecimal("26.3934994510000")))
+    }
+  }
+
+  test("SPARK-25988: self join with aliases on partitioned tables #1") {
+    withTempView("tmpView1", "tmpView2") {
+      withTable("tab1", "tab2") {
+        sql(
+          """
+            |CREATE TABLE `tab1` (`col1` INT, `TDATE` DATE)
+            |USING CSV
+            |PARTITIONED BY (TDATE)
+          """.stripMargin)
+        spark.table("tab1").where("TDATE >= '2017-08-15'").createOrReplaceTempView("tmpView1")
+        sql("CREATE TABLE `tab2` (`TDATE` DATE) USING parquet")
+        sql(
+          """
+            |CREATE OR REPLACE TEMPORARY VIEW tmpView2 AS
+            |SELECT N.tdate, col1 AS aliasCol1
+            |FROM tmpView1 N
+            |JOIN tab2 Z
+            |ON N.tdate = Z.tdate
+          """.stripMargin)
+        withSQLConf(SQLConf.AUTO_BROADCASTJOIN_THRESHOLD.key -> "0") {
+          sql("SELECT * FROM tmpView2 x JOIN tmpView2 y ON x.tdate = y.tdate").collect()
+        }
+      }
+    }
+  }
+
+  test("SPARK-25988: self join with aliases on partitioned tables #2") {
+    withTempView("tmp") {
+      withTable("tab1", "tab2") {
+        sql(
+          """
+            |CREATE TABLE `tab1` (`EX` STRING, `TDATE` DATE)
+            |USING parquet
+            |PARTITIONED BY (tdate)
+          """.stripMargin)
+        sql("CREATE TABLE `tab2` (`TDATE` DATE) USING parquet")
+        sql(
+          """
+            |CREATE OR REPLACE TEMPORARY VIEW TMP as
+            |SELECT  N.tdate, EX AS new_ex
+            |FROM tab1 N
+            |JOIN tab2 Z
+            |ON N.tdate = Z.tdate
+          """.stripMargin)
+        sql(
+          """
+            |SELECT * FROM TMP x JOIN TMP y
+            |ON x.tdate = y.tdate
+          """.stripMargin).queryExecution.executedPlan
+      }
+    }
+  }
+
+  test("SPARK-26366: verify ReplaceExceptWithFilter") {
+    Seq(true, false).foreach { enabled =>
+      withSQLConf(SQLConf.REPLACE_EXCEPT_WITH_FILTER.key -> enabled.toString) {
+        val df = spark.createDataFrame(
+          sparkContext.parallelize(Seq(Row(0, 3, 5),
+            Row(0, 3, null),
+            Row(null, 3, 5),
+            Row(0, null, 5),
+            Row(0, null, null),
+            Row(null, null, 5),
+            Row(null, 3, null),
+            Row(null, null, null))),
+          StructType(Seq(StructField("c1", IntegerType),
+            StructField("c2", IntegerType),
+            StructField("c3", IntegerType))))
+        val where = "c2 >= 3 OR c1 >= 0"
+        val whereNullSafe =
+          """
+            |(c2 IS NOT NULL AND c2 >= 3)
+            |OR (c1 IS NOT NULL AND c1 >= 0)
+          """.stripMargin
+
+        val df_a = df.filter(where)
+        val df_b = df.filter(whereNullSafe)
+        checkAnswer(df.except(df_a), df.except(df_b))
+
+        val whereWithIn = "c2 >= 3 OR c1 in (2)"
+        val whereWithInNullSafe =
+          """
+            |(c2 IS NOT NULL AND c2 >= 3)
+          """.stripMargin
+        val dfIn_a = df.filter(whereWithIn)
+        val dfIn_b = df.filter(whereWithInNullSafe)
+        checkAnswer(df.except(dfIn_a), df.except(dfIn_b))
+      }
+    }
+  }
+
+  test("SPARK-26402: accessing nested fields with different cases in case insensitive mode") {
+    withSQLConf(SQLConf.CASE_SENSITIVE.key -> "true") {
+      val msg = intercept[AnalysisException] {
+        withTable("t") {
+          sql("create table t (s struct<i: Int>) using json")
+          checkAnswer(sql("select s.I from t group by s.i"), Nil)
+        }
+      }.message
+      assert(msg.contains("No such struct field I in i"))
+    }
+
+    withSQLConf(SQLConf.CASE_SENSITIVE.key -> "false") {
+      withTable("t") {
+        sql("create table t (s struct<i: Int>) using json")
+        checkAnswer(sql("select s.I from t group by s.i"), Nil)
+      }
+    }
+  }
+
+  test("SPARK-26709: OptimizeMetadataOnlyQuery does not handle empty records correctly") {
+    Seq(true, false).foreach { enableOptimizeMetadataOnlyQuery =>
+      withSQLConf(SQLConf.OPTIMIZER_METADATA_ONLY.key -> enableOptimizeMetadataOnlyQuery.toString) {
+        withTable("t") {
+          sql("CREATE TABLE t (col1 INT, p1 INT) USING PARQUET PARTITIONED BY (p1)")
+          sql("INSERT INTO TABLE t PARTITION (p1 = 5) SELECT ID FROM range(1, 1)")
+          if (enableOptimizeMetadataOnlyQuery) {
+            // The result is wrong if we enable the configuration.
+            checkAnswer(sql("SELECT MAX(p1) FROM t"), Row(5))
+          } else {
+            checkAnswer(sql("SELECT MAX(p1) FROM t"), Row(null))
+          }
+          checkAnswer(sql("SELECT MAX(col1) FROM t"), Row(null))
+        }
+
+        withTempPath { path =>
+          val tabLocation = path.getCanonicalPath
+          val partLocation1 = tabLocation + "/p=3"
+          val partLocation2 = tabLocation + "/p=1"
+          // SPARK-23271 empty RDD when saved should write a metadata only file
+          val df = spark.emptyDataFrame.select(lit(1).as("col"))
+          df.write.parquet(partLocation1)
+          val df2 = spark.range(10).toDF("col")
+          df2.write.parquet(partLocation2)
+          val readDF = spark.read.parquet(tabLocation)
+          if (enableOptimizeMetadataOnlyQuery) {
+            // The result is wrong if we enable the configuration.
+            checkAnswer(readDF.selectExpr("max(p)"), Row(3))
+          } else {
+            checkAnswer(readDF.selectExpr("max(p)"), Row(1))
+          }
+          checkAnswer(readDF.selectExpr("max(col)"), Row(9))
+        }
+      }
+    }
+  }
+
+  test("SPARK-28156: self-join should not miss cached view") {
+    withTable("table1") {
+      withView("table1_vw") {
+        val df = Seq.tabulate(5) { x => (x, x + 1, x + 2, x + 3) }.toDF("a", "b", "c", "d")
+        df.write.mode("overwrite").format("orc").saveAsTable("table1")
+        sql("drop view if exists table1_vw")
+        sql("create view table1_vw as select * from table1")
+
+        val cachedView = sql("select a, b, c, d from table1_vw")
+
+        cachedView.createOrReplaceTempView("cachedview")
+        cachedView.persist()
+
+        val queryDf = sql(
+          s"""select leftside.a, leftside.b
+             |from cachedview leftside
+             |join cachedview rightside
+             |on leftside.a = rightside.a
+           """.stripMargin)
+
+        val inMemoryTableScan = queryDf.queryExecution.executedPlan.collect {
+          case i: InMemoryTableScanExec => i
+        }
+        assert(inMemoryTableScan.size == 2)
+        checkAnswer(queryDf, Row(0, 1) :: Row(1, 2) :: Row(2, 3) :: Row(3, 4) :: Row(4, 5) :: Nil)
+      }
+    }
+
+  }
+
+  test("SPARK-29213: FilterExec should not throw NPE") {
+    withTempView("t1", "t2", "t3") {
+      sql("SELECT ''").as[String].map(identity).toDF("x").createOrReplaceTempView("t1")
+      sql("SELECT * FROM VALUES 0, CAST(NULL AS BIGINT)")
+        .as[java.lang.Long]
+        .map(identity)
+        .toDF("x")
+        .createOrReplaceTempView("t2")
+      sql("SELECT ''").as[String].map(identity).toDF("x").createOrReplaceTempView("t3")
+      sql(
+        """
+          |SELECT t1.x
+          |FROM t1
+          |LEFT JOIN (
+          |    SELECT x FROM (
+          |        SELECT x FROM t2
+          |        UNION ALL
+          |        SELECT SUBSTR(x,5) x FROM t3
+          |    ) a
+          |    WHERE LENGTH(x)>0
+          |) t3
+          |ON t1.x=t3.x
+        """.stripMargin).collect()
+    }
+  }
+
+  test("SPARK-29682: Conflicting attributes in Expand are resolved") {
+    val numsDF = Seq(1, 2, 3).toDF("nums")
+    val cubeDF = numsDF.cube("nums").agg(max(lit(0)).as("agcol"))
+
+    checkAnswer(
+      cubeDF.join(cubeDF, "nums"),
+      Row(1, 0, 0) :: Row(2, 0, 0) :: Row(3, 0, 0) :: Nil)
+  }
+
+  test("SPARK-30447: fix constant propagation inside NOT") {
+    withTempView("t") {
+      Seq[Integer](1, null).toDF("c").createOrReplaceTempView("t")
+      val df = sql("SELECT * FROM t WHERE NOT(c = 1 AND c + 1 = 1)")
+
+      checkAnswer(df, Row(1))
+    }
+  }
+
+  test("SPARK-32372: ResolveReferences.dedupRight should only rewrite attributes for ancestor " +
+    "plans of the conflict plan") {
+    sql("SELECT name, avg(age) as avg_age FROM person GROUP BY name")
+      .createOrReplaceTempView("person_a")
+    sql("SELECT p1.name, p2.avg_age FROM person p1 JOIN person_a p2 ON p1.name = p2.name")
+      .createOrReplaceTempView("person_b")
+    sql("SELECT * FROM person_a UNION SELECT * FROM person_b")
+      .createOrReplaceTempView("person_c")
+    checkAnswer(
+      sql("SELECT p1.name, p2.avg_age FROM person_c p1 JOIN person_c p2 ON p1.name = p2.name"),
+      Row("jim", 20.0) :: Row("mike", 30.0) :: Nil)
+  }
+
+  test("SPARK-32280: Avoid duplicate rewrite attributes when there're multiple JOINs") {
+    withSQLConf(SQLConf.CROSS_JOINS_ENABLED.key -> "true") {
+      sql("SELECT 1 AS id").createOrReplaceTempView("A")
+      sql("SELECT id, 'foo' AS kind FROM A").createOrReplaceTempView("B")
+      sql("SELECT l.id as id FROM B AS l LEFT SEMI JOIN B AS r ON l.kind = r.kind")
+        .createOrReplaceTempView("C")
+      checkAnswer(sql("SELECT 0 FROM ( SELECT * FROM B JOIN C USING (id)) " +
+        "JOIN ( SELECT * FROM B JOIN C USING (id)) USING (id)"), Row(0))
+    }
   }
 }
 

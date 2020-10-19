@@ -250,7 +250,9 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
       val codec = CompressionCodec.createCodec(SparkEnv.get.conf)
       val bos = new ByteArrayOutputStream()
       val out = new DataOutputStream(codec.compressedOutputStream(bos))
-      while (iter.hasNext && (n < 0 || count < n)) {
+      // `iter.hasNext` may produce one row and buffer it, we should only call it when the limit is
+      // not hit.
+      while ((n < 0 || count < n) && iter.hasNext) {
         val row = iter.next().asInstanceOf[UnsafeRow]
         out.writeInt(row.getSizeInBytes)
         row.writeToStream(out, buffer)
@@ -418,6 +420,15 @@ abstract class SparkPlan extends QueryPlan[SparkPlan] with Logging with Serializ
       case (dt, index) => SortOrder(BoundReference(index, dt, nullable = true), Ascending)
     }
     newOrdering(order, Seq.empty)
+  }
+
+  /**
+   * Cleans up the resources used by the physical operator (if any). In general, all the resources
+   * should be cleaned up when the task finishes but operators like SortMergeJoinExec and LimitExec
+   * may want eager cleanup to free up tight resources (e.g., memory).
+   */
+  protected[sql] def cleanupResources(): Unit = {
+    children.foreach(_.cleanupResources())
   }
 }
 

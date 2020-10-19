@@ -191,7 +191,7 @@ class ClientSuite extends SparkFunSuite with Matchers {
     appContext.getQueue should be ("staging-queue")
     appContext.getAMContainerSpec should be (containerLaunchContext)
     appContext.getApplicationType should be ("SPARK")
-    appContext.getClass.getMethods.filter(_.getName.equals("getApplicationTags")).foreach{ method =>
+    appContext.getClass.getMethods.filter(_.getName == "getApplicationTags").foreach { method =>
       val tags = method.invoke(appContext).asInstanceOf[java.util.Set[String]]
       tags should contain allOf ("tag1", "dup", "tag2", "multi word")
       tags.asScala.count(_.nonEmpty) should be (4)
@@ -355,6 +355,25 @@ class ClientSuite extends SparkFunSuite with Matchers {
     // Only jar2 will be added to SECONDARY_JARS, jar3 which has the same name with jar2 will be
     // ignored.
     sparkConf.get(SECONDARY_JARS) should be (Some(Seq(new File(jar2.toURI).getName)))
+  }
+
+  test("SPARK-31582 Being able to not populate Hadoop classpath") {
+    Seq(true, false).foreach { populateHadoopClassPath =>
+      withAppConf(Fixtures.mapAppConf) { conf =>
+        val sparkConf = new SparkConf()
+          .set(POPULATE_HADOOP_CLASSPATH, populateHadoopClassPath)
+        val env = new MutableHashMap[String, String]()
+        val args = new ClientArguments(Array("--jar", USER))
+        populateClasspath(args, conf, sparkConf, env)
+        if (populateHadoopClassPath) {
+          classpath(env) should
+            (contain (Fixtures.knownYARNAppCP) and contain (Fixtures.knownMRAppCP))
+        } else {
+          classpath(env) should
+            (not contain (Fixtures.knownYARNAppCP) and not contain (Fixtures.knownMRAppCP))
+        }
+      }
+    }
   }
 
   private val matching = Seq(

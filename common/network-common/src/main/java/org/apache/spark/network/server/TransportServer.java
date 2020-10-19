@@ -70,11 +70,14 @@ public class TransportServer implements Closeable {
     this.appRpcHandler = appRpcHandler;
     this.bootstraps = Lists.newArrayList(Preconditions.checkNotNull(bootstraps));
 
+    boolean shouldClose = true;
     try {
       init(hostToBind, portToBind);
-    } catch (RuntimeException e) {
-      JavaUtils.closeQuietly(this);
-      throw e;
+      shouldClose = false;
+    } finally {
+      if (shouldClose) {
+        JavaUtils.closeQuietly(this);
+      }
     }
   }
 
@@ -88,9 +91,10 @@ public class TransportServer implements Closeable {
   private void init(String hostToBind, int portToBind) {
 
     IOMode ioMode = IOMode.valueOf(conf.ioMode());
-    EventLoopGroup bossGroup =
-      NettyUtils.createEventLoop(ioMode, conf.serverThreads(), conf.getModuleName() + "-server");
-    EventLoopGroup workerGroup = bossGroup;
+    EventLoopGroup bossGroup = NettyUtils.createEventLoop(ioMode, 1,
+      conf.getModuleName() + "-boss");
+    EventLoopGroup workerGroup =  NettyUtils.createEventLoop(ioMode, conf.serverThreads(),
+      conf.getModuleName() + "-server");
 
     PooledByteBufAllocator allocator = NettyUtils.createPooledByteBufAllocator(
       conf.preferDirectBufs(), true /* allowCache */, conf.serverThreads());

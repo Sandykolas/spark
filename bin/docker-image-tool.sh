@@ -54,6 +54,8 @@ function build {
       img_path=$IMG_PATH
       --build-arg
       spark_jars=assembly/target/scala-$SPARK_SCALA_VERSION/jars
+      --build-arg
+      k8s_tests=resource-managers/kubernetes/integration-tests/tests
     )
   else
     # Not passed as an argument to docker, but used to validate the Spark directory.
@@ -143,7 +145,7 @@ PYDOCKERFILE=
 RDOCKERFILE=
 NOCACHEARG=
 BUILD_PARAMS=
-while getopts f:p:R:mr:t:n:b: option
+while getopts f:p:R:mr:t:nb: option
 do
  case "${option}"
  in
@@ -158,7 +160,7 @@ do
    if ! which minikube 1>/dev/null; then
      error "Cannot find minikube."
    fi
-   eval $(minikube docker-env)
+   eval $(minikube docker-env --shell bash)
    ;;
  esac
 done

@@ -74,14 +74,8 @@ case class CachedRDDBuilder(
     }
   }
 
-  def withCachedPlan(cachedPlan: SparkPlan): CachedRDDBuilder = {
-    new CachedRDDBuilder(
-      useCompression,
-      batchSize,
-      storageLevel,
-      cachedPlan = cachedPlan,
-      tableName
-    )(_cachedColumnBuffers)
+  def isCachedColumnBuffersLoaded: Boolean = {
+    _cachedColumnBuffers != null
   }
 
   private def buildBuffers(): RDD[CachedBatch] = {
@@ -206,7 +200,7 @@ case class InMemoryRelation(
         outputOrdering).asInstanceOf[this.type]
   }
 
-  override protected def otherCopyArgs: Seq[AnyRef] = Seq(statsOfPlanToCache)
+  override protected def otherCopyArgs: Seq[AnyRef] = Seq(statsOfPlanToCache, outputOrdering)
 
   override def simpleString: String =
     s"InMemoryRelation [${Utils.truncatedString(output, ", ")}], ${cacheBuilder.storageLevel}"

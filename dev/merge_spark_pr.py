@@ -274,7 +274,7 @@ def resolve_jira_issue(merge_branches, comment, default_jira_id=""):
     versions = sorted(versions, key=lambda x: x.name, reverse=True)
     versions = filter(lambda x: x.raw['released'] is False, versions)
     # Consider only x.y.z versions
-    versions = filter(lambda x: re.match('\d+\.\d+\.\d+', x.name), versions)
+    versions = filter(lambda x: re.match(r'\d+\.\d+\.\d+', x.name), versions)
 
     default_fix_versions = map(lambda x: fix_version_from_branch(x, versions).name, merge_branches)
     for v in default_fix_versions:
@@ -403,7 +403,7 @@ def standardize_jira_ref(text):
 
     # Extract spark component(s):
     # Look for alphanumeric chars, spaces, dashes, periods, and/or commas
-    pattern = re.compile(r'(\[[\w\s,-\.]+\])', re.IGNORECASE)
+    pattern = re.compile(r'(\[[\w\s,.-]+\])', re.IGNORECASE)
     for component in pattern.findall(text):
         components.append(component.upper())
         text = text.replace(component, '')
@@ -438,6 +438,10 @@ def main():
     os.chdir(SPARK_HOME)
     original_head = get_current_ref()
 
+    # Check this up front to avoid failing the JIRA update at the very end
+    if not JIRA_USERNAME or not JIRA_PASSWORD:
+        continue_maybe("The env-vars JIRA_USERNAME and/or JIRA_PASSWORD are not set. Continue?")
+
     branches = get_json("%s/branches" % GITHUB_API_BASE)
     branch_names = filter(lambda x: x.startswith("branch-"), [x['name'] for x in branches])
     # Assumes branch names can be sorted lexicographically
@@ -449,8 +453,13 @@ def main():
 
     url = pr["url"]
 
+    # Warn if the PR is WIP
+    if "[WIP]" in pr["title"]:
+        msg = "The PR title has `[WIP]`:\n%s\nContinue?" % pr["title"]
+        continue_maybe(msg)
+
     # Decide whether to use the modified title or not
-    modified_title = standardize_jira_ref(pr["title"])
+    modified_title = standardize_jira_ref(pr["title"]).rstrip(".")
     if modified_title != pr["title"]:
         print("I've re-written the title as follows to match the standard format:")
         print("Original: %s" % pr["title"])
@@ -466,7 +475,24 @@ def main():
     else:
         title = pr["title"]
 
-    body = pr["body"]
+    modified_body = re.sub(re.compile(r'<!--[^>]*-->\n?', re.DOTALL), '', pr["body"]).lstrip()
+    if modified_body != pr["body"]:
+        print("=" * 80)
+        print(modified_body)
+        print("=" * 80)
+        print("I've removed the comments from PR template like the above:")
+        result = input("Would you like to use the modified body? (y/n): ")
+        if result.lower() == "y":
+            body = modified_body
+            print("Using modified body:")
+        else:
+            body = pr["body"]
+            print("Using original body:")
+        print("=" * 80)
+        print(body)
+        print("=" * 80)
+    else:
+        body = pr["body"]
     target_ref = pr["base"]["ref"]
     user_login = pr["user"]["login"]
     base_ref = pr["head"]["ref"]

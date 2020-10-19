@@ -34,14 +34,27 @@ if sys.version >= '3':
 from py4j.java_gateway import java_import, JavaGateway, JavaObject, GatewayParameters
 from pyspark.find_spark_home import _find_spark_home
 from pyspark.serializers import read_int, write_with_length, UTF8Deserializer
+from pyspark.util import _exception_message
 
 
 def launch_gateway(conf=None):
     """
     launch jvm gateway
     :param conf: spark configuration passed to spark-submit
-    :return:
+    :return: a JVM gateway
     """
+    return _launch_gateway(conf)
+
+
+def _launch_gateway(conf=None, insecure=False):
+    """
+    launch jvm gateway
+    :param conf: spark configuration passed to spark-submit
+    :param insecure: True to create an insecure gateway; only for testing
+    :return: a JVM gateway
+    """
+    if insecure and os.environ.get("SPARK_TESTING", "0") != "1":
+        raise ValueError("creating insecure gateways is only for testing")
     if "PYSPARK_GATEWAY_PORT" in os.environ:
         gateway_port = int(os.environ["PYSPARK_GATEWAY_PORT"])
         gateway_secret = os.environ["PYSPARK_GATEWAY_SECRET"]
@@ -73,6 +86,8 @@ def launch_gateway(conf=None):
 
             env = dict(os.environ)
             env["_PYSPARK_DRIVER_CONN_INFO_PATH"] = conn_info_file
+            if insecure:
+                env["_PYSPARK_CREATE_INSECURE_GATEWAY"] = "1"
 
             # Launch the Java gateway.
             # We open a pipe to stdin so that the Java gateway can die when the pipe is broken
@@ -115,9 +130,10 @@ def launch_gateway(conf=None):
             atexit.register(killChild)
 
     # Connect to the gateway
-    gateway = JavaGateway(
-        gateway_parameters=GatewayParameters(port=gateway_port, auth_token=gateway_secret,
-                                             auto_convert=True))
+    gateway_params = GatewayParameters(port=gateway_port, auto_convert=True)
+    if not insecure:
+        gateway_params.auth_token = gateway_secret
+    gateway = JavaGateway(gateway_parameters=gateway_params)
 
     # Import the classes used by PySpark
     java_import(gateway.jvm, "org.apache.spark.SparkConf")
@@ -134,7 +150,7 @@ def launch_gateway(conf=None):
     return gateway
 
 
-def do_server_auth(conn, auth_secret):
+def _do_server_auth(conn, auth_secret):
     """
     Performs the authentication protocol defined by the SocketAuthHelper class on the given
     file-like object 'conn'.
@@ -145,6 +161,36 @@ def do_server_auth(conn, auth_secret):
     if reply != "ok":
         conn.close()
         raise Exception("Unexpected reply from iterator server.")
+
+
+def local_connect_and_auth(port, auth_secret):
+    """
+    Connect to local host, authenticate with it, and return a (sockfile,sock) for that connection.
+    Handles IPV4 & IPV6, does some error handling.
+    :param port
+    :param auth_secret
+    :return: a tuple with (sockfile, sock)
+    """
+    sock = None
+    errors = []
+    # Support for both IPv4 and IPv6.
+    # On most of IPv6-ready systems, IPv6 will take precedence.
+    for res in socket.getaddrinfo("127.0.0.1", port, socket.AF_UNSPEC, socket.SOCK_STREAM):
+        af, socktype, proto, _, sa = res
+        try:
+            sock = socket.socket(af, socktype, proto)
+            sock.settimeout(15)
+            sock.connect(sa)
+            sockfile = sock.makefile("rwb", 65536)
+            _do_server_auth(sockfile, auth_secret)
+            return (sockfile, sock)
+        except socket.error as e:
+            emsg = _exception_message(e)
+            errors.append("tried to connect to %s, but an error occured: %s" % (sa, emsg))
+            sock.close()
+            sock = None
+    else:
+        raise Exception("could not open socket: %s" % errors)
 
 
 def ensure_callback_server_started(gw):

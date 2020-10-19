@@ -38,7 +38,7 @@ import org.apache.spark.sql.hive.{HiveExternalCatalog, HiveUtils}
 import org.apache.spark.sql.hive.test.TestHiveVersion
 import org.apache.spark.sql.types.IntegerType
 import org.apache.spark.sql.types.StructType
-import org.apache.spark.tags.ExtendedHiveTest
+import org.apache.spark.tags.{ExtendedHiveTest, SlowHiveTest}
 import org.apache.spark.util.{MutableURLClassLoader, Utils}
 
 /**
@@ -48,6 +48,7 @@ import org.apache.spark.util.{MutableURLClassLoader, Utils}
  * is not fully tested.
  */
 // TODO: Refactor this to `HiveClientSuite` and make it a subclass of `HiveVersionSuite`
+@SlowHiveTest
 @ExtendedHiveTest
 class VersionsSuite extends SparkFunSuite with Logging {
 
@@ -568,6 +569,17 @@ class VersionsSuite extends SparkFunSuite with Logging {
       client.runSqlHive("CREATE TABLE indexed_table (key INT)")
       client.runSqlHive("CREATE INDEX index_1 ON TABLE indexed_table(key) " +
         "as 'COMPACT' WITH DEFERRED REBUILD")
+    }
+
+    test(s"$version: sql read hive materialized view") {
+      // HIVE-14249 Since Hive 2.3.0, materialized view is supported.
+      // But skip Hive 3.1 because of SPARK-27074.
+      if (version == "2.3") {
+        client.runSqlHive("CREATE TABLE materialized_view_tbl (c1 INT)")
+        client.runSqlHive("CREATE MATERIALIZED VIEW mv1 AS SELECT * FROM materialized_view_tbl")
+        val e = intercept[AnalysisException](versionSpark.table("mv1").collect()).getMessage
+        assert(e.contains("Hive materialized view is not supported"))
+      }
     }
 
     ///////////////////////////////////////////////////////////////////////////

@@ -47,7 +47,7 @@ public final class Platform {
   static {
     boolean _unaligned;
     String arch = System.getProperty("os.arch", "");
-    if (arch.equals("ppc64le") || arch.equals("ppc64")) {
+    if (arch.equals("ppc64le") || arch.equals("ppc64") || arch.equals("s390x")) {
       // Since java.nio.Bits.unaligned() doesn't return true on ppc (See JDK-8165231), but
       // ppc64 and ppc64le support it
       _unaligned = true;
@@ -187,7 +187,7 @@ public final class Platform {
   }
 
   public static void copyMemory(
-      Object src, long srcOffset, Object dst, long dstOffset, long length) {
+    Object src, long srcOffset, Object dst, long dstOffset, long length) {
     // Check if dstOffset is before or after srcOffset to determine if we should copy
     // forward or backwards. This is necessary in case src and dst overlap.
     if (dstOffset < srcOffset) {

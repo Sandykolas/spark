@@ -83,30 +83,6 @@ class CollectionExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper
     checkEvaluation(MapValues(m2), null)
   }
 
-  test("MapEntries") {
-    def r(values: Any*): InternalRow = create_row(values: _*)
-
-    // Primitive-type keys/values
-    val mi0 = Literal.create(Map(1 -> 1, 2 -> null, 3 -> 2), MapType(IntegerType, IntegerType))
-    val mi1 = Literal.create(Map[Int, Int](), MapType(IntegerType, IntegerType))
-    val mi2 = Literal.create(null, MapType(IntegerType, IntegerType))
-    val mid0 = Literal.create(Map(1 -> 1.1, 2 -> 2.2), MapType(IntegerType, DoubleType))
-
-    checkEvaluation(MapEntries(mi0), Seq(r(1, 1), r(2, null), r(3, 2)))
-    checkEvaluation(MapEntries(mi1), Seq.empty)
-    checkEvaluation(MapEntries(mi2), null)
-    checkEvaluation(MapEntries(mid0), Seq(r(1, 1.1), r(2, 2.2)))
-
-    // Non-primitive-type keys/values
-    val ms0 = Literal.create(Map("a" -> "c", "b" -> null), MapType(StringType, StringType))
-    val ms1 = Literal.create(Map[Int, Int](), MapType(StringType, StringType))
-    val ms2 = Literal.create(null, MapType(StringType, StringType))
-
-    checkEvaluation(MapEntries(ms0), Seq(r("a", "c"), r("b", null)))
-    checkEvaluation(MapEntries(ms1), Seq.empty)
-    checkEvaluation(MapEntries(ms2), null)
-  }
-
   test("Map Concat") {
     val m0 = Literal.create(Map("a" -> "1", "b" -> "2"), MapType(StringType, StringType,
       valueContainsNull = false))
@@ -326,12 +302,19 @@ class CollectionExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper
     val d2 = new Decimal().set(100)
     val a4 = Literal.create(Seq(d2, d1), ArrayType(DecimalType(10, 0)))
     val a5 = Literal.create(Seq(null, null), ArrayType(NullType))
+    val a6 = Literal.create(Seq(true, false, true, false),
+      ArrayType(BooleanType, containsNull = false))
+    val a7 = Literal.create(Seq(true, false, true, false), ArrayType(BooleanType))
+    val a8 = Literal.create(Seq(true, false, true, null, false), ArrayType(BooleanType))
 
     checkEvaluation(new SortArray(a0), Seq(1, 2, 3))
     checkEvaluation(new SortArray(a1), Seq[Integer]())
     checkEvaluation(new SortArray(a2), Seq("a", "b"))
     checkEvaluation(new SortArray(a3), Seq(null, "a", "b"))
     checkEvaluation(new SortArray(a4), Seq(d1, d2))
+    checkEvaluation(new SortArray(a6), Seq(false, false, true, true))
+    checkEvaluation(new SortArray(a7), Seq(false, false, true, true))
+    checkEvaluation(new SortArray(a8), Seq(null, false, false, true, true))
     checkEvaluation(SortArray(a0, Literal(true)), Seq(1, 2, 3))
     checkEvaluation(SortArray(a1, Literal(true)), Seq[Integer]())
     checkEvaluation(SortArray(a2, Literal(true)), Seq("a", "b"))
@@ -383,10 +366,13 @@ class CollectionExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper
     val a3 = Literal.create(null, ArrayType(StringType))
     val a4 = Literal.create(Seq(create_row(1)), ArrayType(StructType(Seq(
       StructField("a", IntegerType, true)))))
+    // Explicitly mark the array type not nullable (spark-25308)
+    val a5 = Literal.create(Seq(1, 2, 3), ArrayType(IntegerType, containsNull = false))
 
     checkEvaluation(ArrayContains(a0, Literal(1)), true)
     checkEvaluation(ArrayContains(a0, Literal(0)), false)
     checkEvaluation(ArrayContains(a0, Literal.create(null, IntegerType)), null)
+    checkEvaluation(ArrayContains(a5, Literal(1)), true)
 
     checkEvaluation(ArrayContains(a1, Literal("")), true)
     checkEvaluation(ArrayContains(a1, Literal("a")), null)
@@ -439,6 +425,7 @@ class CollectionExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper
     val a4 = Literal.create(Seq[String](null, ""), ArrayType(StringType))
     val a5 = Literal.create(Seq[String]("", "abc"), ArrayType(StringType))
     val a6 = Literal.create(Seq[String]("def", "ghi"), ArrayType(StringType))
+    val a7 = Literal.create(Seq(1, 2, 3), ArrayType(IntegerType, containsNull = false))
 
     val emptyIntArray = Literal.create(Seq.empty[Int], ArrayType(IntegerType))
 
@@ -453,6 +440,7 @@ class CollectionExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper
     checkEvaluation(ArraysOverlap(a4, a5), true)
     checkEvaluation(ArraysOverlap(a4, a6), null)
     checkEvaluation(ArraysOverlap(a5, a6), false)
+    checkEvaluation(ArraysOverlap(a7, a7), true)
 
     // null handling
     checkEvaluation(ArraysOverlap(emptyIntArray, a2), false)
@@ -471,9 +459,12 @@ class CollectionExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper
       ArrayType(BinaryType))
     val b2 = Literal.create(Seq[Array[Byte]](Array[Byte](2, 1), Array[Byte](4, 3)),
       ArrayType(BinaryType))
+    val b3 = Literal.create(Seq[Array[Byte]](Array[Byte](1, 2), Array[Byte](3, 4)),
+      ArrayType(BinaryType, containsNull = false))
 
     checkEvaluation(ArraysOverlap(b0, b1), true)
     checkEvaluation(ArraysOverlap(b0, b2), false)
+    checkEvaluation(ArraysOverlap(b3, b3), true)
 
     // arrays of complex data types
     val aa0 = Literal.create(Seq[Array[String]](Array[String]("a", "b"), Array[String]("c", "d")),
@@ -1324,6 +1315,8 @@ class CollectionExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper
       ArrayType(DoubleType))
     val a7 = Literal.create(Seq(1.123f, 0.1234f, 1.121f, 1.123f, 1.1230f, 1.121f, 0.1234f),
       ArrayType(FloatType))
+    val a8 =
+      Literal.create(Seq(2, 1, 2, 3, 4, 4, 5).map(_.toString.getBytes), ArrayType(BinaryType))
 
     checkEvaluation(new ArrayDistinct(a0), Seq(2, 1, 3, 4, 5))
     checkEvaluation(new ArrayDistinct(a1), Seq.empty[Integer])
@@ -1333,6 +1326,7 @@ class CollectionExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper
     checkEvaluation(new ArrayDistinct(a5), Seq(true, false))
     checkEvaluation(new ArrayDistinct(a6), Seq(1.123, 0.1234, 1.121))
     checkEvaluation(new ArrayDistinct(a7), Seq(1.123f, 0.1234f, 1.121f))
+    checkEvaluation(new ArrayDistinct(a8), Seq(2, 1, 3, 4, 5).map(_.toString.getBytes))
 
     // complex data types
     val b0 = Literal.create(Seq[Array[Byte]](Array[Byte](5, 6), Array[Byte](1, 2),
@@ -1353,9 +1347,17 @@ class CollectionExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper
       ArrayType(ArrayType(IntegerType)))
     val c2 = Literal.create(Seq[Seq[Int]](null, Seq[Int](2, 1), null, null, Seq[Int](2, 1), null),
       ArrayType(ArrayType(IntegerType)))
+    val c3 = Literal.create(Seq[Seq[Int]](Seq[Int](1, 2), Seq[Int](1, 2), Seq[Int](1, 2),
+      Seq[Int](3, 4), Seq[Int](4, 5)), ArrayType(ArrayType(IntegerType)))
+    val c4 = Literal.create(Seq[Seq[Int]](null, Seq[Int](1, 2), Seq[Int](1, 2),
+      Seq[Int](3, 4), Seq[Int](4, 5), null), ArrayType(ArrayType(IntegerType)))
     checkEvaluation(ArrayDistinct(c0), Seq[Seq[Int]](Seq[Int](1, 2), Seq[Int](3, 4)))
     checkEvaluation(ArrayDistinct(c1), Seq[Seq[Int]](Seq[Int](5, 6), Seq[Int](2, 1)))
     checkEvaluation(ArrayDistinct(c2), Seq[Seq[Int]](null, Seq[Int](2, 1)))
+    checkEvaluation(ArrayDistinct(c3), Seq[Seq[Int]](Seq[Int](1, 2), Seq[Int](3, 4),
+      Seq[Int](4, 5)))
+    checkEvaluation(ArrayDistinct(c4), Seq[Seq[Int]](null, Seq[Int](1, 2), Seq[Int](3, 4),
+      Seq[Int](4, 5)))
   }
 
   test("Array Union") {
@@ -1740,5 +1742,23 @@ class CollectionExpressionsSuite extends SparkFunSuite with ExpressionEvalHelper
     assert(ArrayIntersect(a04, a05).dataType.asInstanceOf[ArrayType].containsNull === true)
     assert(ArrayIntersect(a20, a21).dataType.asInstanceOf[ArrayType].containsNull === false)
     assert(ArrayIntersect(a23, a24).dataType.asInstanceOf[ArrayType].containsNull === true)
+  }
+
+  test("SPARK-31980: Start and end equal in month range") {
+    checkEvaluation(new Sequence(
+      Literal(Date.valueOf("2018-01-01")),
+      Literal(Date.valueOf("2018-01-01")),
+      Literal(CalendarInterval.fromString("interval 1 day"))),
+      Seq(Date.valueOf("2018-01-01")))
+    checkEvaluation(new Sequence(
+      Literal(Date.valueOf("2018-01-01")),
+      Literal(Date.valueOf("2018-01-01")),
+      Literal(CalendarInterval.fromString("interval 1 month"))),
+      Seq(Date.valueOf("2018-01-01")))
+    checkEvaluation(new Sequence(
+      Literal(Date.valueOf("2018-01-01")),
+      Literal(Date.valueOf("2018-01-01")),
+      Literal(CalendarInterval.fromString("interval 1 year"))),
+      Seq(Date.valueOf("2018-01-01")))
   }
 }

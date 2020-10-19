@@ -21,11 +21,13 @@ import java.io.File
 import java.net.{URI, URISyntaxException}
 import java.nio.file.FileSystems
 
+import scala.collection.JavaConverters._
 import scala.collection.mutable.ArrayBuffer
 import scala.util.Try
 import scala.util.control.NonFatal
 
 import org.apache.hadoop.fs.{FileContext, FsConstants, Path}
+import org.apache.hadoop.fs.permission.{AclEntry, AclEntryScope, AclEntryType, FsAction, FsPermission}
 
 import org.apache.spark.sql.{AnalysisException, Row, SparkSession}
 import org.apache.spark.sql.catalyst.TableIdentifier
@@ -159,11 +161,7 @@ case class AlterTableRenameCommand(
       // this can happen with Hive tables when the underlying catalog is in-memory.
       val wasCached = Try(sparkSession.catalog.isCached(oldName.unquotedString)).getOrElse(false)
       if (wasCached) {
-        try {
-          sparkSession.catalog.uncacheTable(oldName.unquotedString)
-        } catch {
-          case NonFatal(e) => log.warn(e.toString, e)
-        }
+        CommandUtils.uncacheTableOrView(sparkSession, oldName.unquotedString)
       }
       // Invalidate the table last, otherwise uncaching the table would load the logical plan
       // back into the hive metastore cache
@@ -193,12 +191,7 @@ case class AlterTableAddColumnsCommand(
     val catalog = sparkSession.sessionState.catalog
     val catalogTable = verifyAlterTableAddColumn(sparkSession.sessionState.conf, catalog, table)
 
-    try {
-      sparkSession.catalog.uncacheTable(table.quotedString)
-    } catch {
-      case NonFatal(e) =>
-        log.warn(s"Exception when attempting to uncache table ${table.quotedString}", e)
-    }
+    CommandUtils.uncacheTableOrView(sparkSession, table.quotedString)
     catalog.refreshTable(table)
 
     SchemaUtils.checkColumnNameDuplication(
@@ -306,7 +299,8 @@ case class LoadDataCommand(
     val loadPath = {
       if (isLocal) {
         val localFS = FileContext.getLocalFSFileContext()
-        makeQualified(FsConstants.LOCAL_FS_URI, localFS.getWorkingDirectory(), new Path(path))
+        LoadDataCommand.makeQualified(FsConstants.LOCAL_FS_URI, localFS.getWorkingDirectory(),
+          new Path(path))
       } else {
         val loadPath = new Path(path)
         // Follow Hive's behavior:
@@ -323,7 +317,7 @@ case class LoadDataCommand(
         // by considering the wild card scenario in mind.as per old logic query param  is
         // been considered while creating URI instance and if path contains wild card char '?'
         // the remaining charecters after '?' will be removed while forming URI instance
-        makeQualified(defaultFS, uriPath, loadPath)
+        LoadDataCommand.makeQualified(defaultFS, uriPath, loadPath)
       }
     }
     val fs = loadPath.getFileSystem(sparkSession.sessionState.newHadoopConf())
@@ -363,7 +357,9 @@ case class LoadDataCommand(
     CommandUtils.updateTableStats(sparkSession, targetTable)
     Seq.empty[Row]
   }
+}
 
+object LoadDataCommand {
   /**
    * Returns a qualified path object. Method ported from org.apache.hadoop.fs.Path class.
    *
@@ -372,8 +368,9 @@ case class LoadDataCommand(
    * @param path       Path instance based on the path string specified by the user.
    * @return qualified path object
    */
-  private def makeQualified(defaultUri: URI, workingDir: Path, path: Path): Path = {
-    val pathUri = if (path.isAbsolute()) path.toUri() else new Path(workingDir, path).toUri()
+  private[sql] def makeQualified(defaultUri: URI, workingDir: Path, path: Path): Path = {
+    val newPath = new Path(workingDir, path)
+    val pathUri = if (path.isAbsolute()) path.toUri() else newPath.toUri()
     if (pathUri.getScheme == null || pathUri.getAuthority == null &&
         defaultUri.getAuthority != null) {
       val scheme = if (pathUri.getScheme == null) defaultUri.getScheme else pathUri.getScheme
@@ -383,14 +380,14 @@ case class LoadDataCommand(
         pathUri.getAuthority
       }
       try {
-        val newUri = new URI(scheme, authority, pathUri.getPath, pathUri.getFragment)
+        val newUri = new URI(scheme, authority, pathUri.getPath, null, pathUri.getFragment)
         new Path(newUri)
       } catch {
         case e: URISyntaxException =>
           throw new IllegalArgumentException(e)
       }
     } else {
-      path
+      newPath
     }
   }
 }
@@ -453,13 +450,73 @@ case class TruncateTableCommand(
         partLocations
       }
     val hadoopConf = spark.sessionState.newHadoopConf()
+    val ignorePermissionAcl = SQLConf.get.truncateTableIgnorePermissionAcl
     locations.foreach { location =>
       if (location.isDefined) {
         val path = new Path(location.get)
         try {
           val fs = path.getFileSystem(hadoopConf)
+
+          // Not all fs impl. support these APIs.
+          var optPermission: Option[FsPermission] = None
+          var optAcls: Option[java.util.List[AclEntry]] = None
+          if (!ignorePermissionAcl) {
+            try {
+              val fileStatus = fs.getFileStatus(path)
+              optPermission = Some(fileStatus.getPermission())
+            } catch {
+              case NonFatal(_) => // do nothing
+            }
+
+            try {
+              optAcls = Some(fs.getAclStatus(path).getEntries)
+            } catch {
+              case NonFatal(_) => // do nothing
+            }
+          }
+
           fs.delete(path, true)
+          // We should keep original permission/acl of the path.
+          // For owner/group, only super-user can set it, for example on HDFS. Because
+          // current user can delete the path, we assume the user/group is correct or not an issue.
           fs.mkdirs(path)
+          if (!ignorePermissionAcl) {
+            optPermission.foreach { permission =>
+              try {
+                fs.setPermission(path, permission)
+              } catch {
+                case NonFatal(e) =>
+                  throw new SecurityException(
+                    s"Failed to set original permission $permission back to " +
+                      s"the created path: $path. Exception: ${e.getMessage}")
+              }
+            }
+            optAcls.foreach { acls =>
+              val aclEntries = acls.asScala.filter(_.getName != null).asJava
+
+              // If the path doesn't have default ACLs, `setAcl` API will throw an error
+              // as it expects user/group/other permissions must be in ACL entries.
+              // So we need to add tradition user/group/other permission
+              // in the form of ACL.
+              optPermission.map { permission =>
+                aclEntries.add(newAclEntry(AclEntryScope.ACCESS,
+                  AclEntryType.USER, permission.getUserAction()))
+                aclEntries.add(newAclEntry(AclEntryScope.ACCESS,
+                  AclEntryType.GROUP, permission.getGroupAction()))
+                aclEntries.add(newAclEntry(AclEntryScope.ACCESS,
+                  AclEntryType.OTHER, permission.getOtherAction()))
+              }
+
+              try {
+                fs.setAcl(path, aclEntries)
+              } catch {
+                case NonFatal(e) =>
+                  throw new SecurityException(
+                    s"Failed to set original ACL $aclEntries back to " +
+                      s"the created path: $path. Exception: ${e.getMessage}")
+              }
+            }
+          }
         } catch {
           case NonFatal(e) =>
             throw new AnalysisException(
@@ -485,6 +542,16 @@ case class TruncateTableCommand(
       catalog.alterTableStats(tableName, Some(newStats))
     }
     Seq.empty[Row]
+  }
+
+  private def newAclEntry(
+      scope: AclEntryScope,
+      aclType: AclEntryType,
+      permission: FsAction): AclEntry = {
+    new AclEntry.Builder()
+      .setScope(scope)
+      .setType(aclType)
+      .setPermission(permission).build()
   }
 }
 
@@ -1058,7 +1125,7 @@ case class ShowCreateTableCommand(table: TableIdentifier) extends RunnableComman
   private def showDataSourceTableOptions(metadata: CatalogTable, builder: StringBuilder): Unit = {
     builder ++= s"USING ${metadata.provider.get}\n"
 
-    val dataSourceOptions = metadata.storage.properties.map {
+    val dataSourceOptions = SQLConf.get.redactOptions(metadata.storage.properties).map {
       case (key, value) => s"${quoteIdentifier(key)} '${escapeSingleQuotedString(value)}'"
     } ++ metadata.storage.locationUri.flatMap { location =>
       if (metadata.tableType == MANAGED) {

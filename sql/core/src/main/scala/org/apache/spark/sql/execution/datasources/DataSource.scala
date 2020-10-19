@@ -23,6 +23,7 @@ import scala.collection.JavaConverters._
 import scala.language.{existentials, implicitConversions}
 import scala.util.{Failure, Success, Try}
 
+import org.apache.hadoop.conf.Configuration
 import org.apache.hadoop.fs.Path
 
 import org.apache.spark.deploy.SparkHadoopUtil
@@ -34,6 +35,7 @@ import org.apache.spark.sql.catalyst.expressions.Attribute
 import org.apache.spark.sql.catalyst.plans.logical.LogicalPlan
 import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.execution.SparkPlan
+import org.apache.spark.sql.execution.command.DataWritingCommand
 import org.apache.spark.sql.execution.datasources.csv.CSVFileFormat
 import org.apache.spark.sql.execution.datasources.jdbc.JdbcRelationProvider
 import org.apache.spark.sql.execution.datasources.json.JsonFileFormat
@@ -63,8 +65,9 @@ import org.apache.spark.util.Utils
  * metadata.  For example, when reading a partitioned table from a file system, partition columns
  * will be inferred from the directory layout even if they are not specified.
  *
- * @param paths A list of file system paths that hold data.  These will be globbed before and
- *              qualified. This option only works when reading from a [[FileFormat]].
+ * @param paths A list of file system paths that hold data. These will be globbed before if
+ *              the "__globPaths__" option is true, and will be qualified. This option only works
+ *              when reading from a [[FileFormat]].
  * @param userSpecifiedSchema An optional specification of the schema of the data. When present
  *                            we skip attempting to infer the schema.
  * @param partitionColumns A list of column names that the relation is partitioned by. This list is
@@ -95,12 +98,24 @@ case class DataSource(
   private val caseInsensitiveOptions = CaseInsensitiveMap(options)
   private val equality = sparkSession.sessionState.conf.resolver
 
+  /**
+   * Whether or not paths should be globbed before being used to access files.
+   */
+  def globPaths: Boolean = {
+    options.get(DataSource.GLOB_PATHS_KEY)
+      .map(_ == "true")
+      .getOrElse(true)
+  }
+
   bucketSpec.map { bucket =>
     SchemaUtils.checkColumnNameDuplication(
       bucket.bucketColumnNames, "in the bucket definition", equality)
     SchemaUtils.checkColumnNameDuplication(
       bucket.sortColumnNames, "in the sort definition", equality)
   }
+
+  private def newHadoopConfiguration(): Configuration =
+    sparkSession.sessionState.newHadoopConfWithOptions(options)
 
   /**
    * Get the schema of the given FileFormat, if provided by `userSpecifiedSchema`, or try to infer
@@ -218,8 +233,8 @@ case class DataSource(
         // For glob pattern, we do not check it because the glob pattern might only make sense
         // once the streaming job starts and some upstream source starts dropping data.
         val hdfsPath = new Path(path)
-        if (!SparkHadoopUtil.get.isGlobPath(hdfsPath)) {
-          val fs = hdfsPath.getFileSystem(sparkSession.sessionState.newHadoopConf())
+        if (!globPaths || !SparkHadoopUtil.get.isGlobPath(hdfsPath)) {
+          val fs = hdfsPath.getFileSystem(newHadoopConfiguration())
           if (!fs.exists(hdfsPath)) {
             throw new AnalysisException(s"Path does not exist: $path")
           }
@@ -330,7 +345,7 @@ case class DataSource(
       case (format: FileFormat, _)
           if FileStreamSink.hasMetadata(
             caseInsensitiveOptions.get("path").toSeq ++ paths,
-            sparkSession.sessionState.newHadoopConf()) =>
+            newHadoopConfiguration()) =>
         val basePath = new Path((caseInsensitiveOptions.get("path").toSeq ++ paths).head)
         val fileCatalog = new MetadataLogFileIndex(sparkSession, basePath, userSpecifiedSchema)
         val dataSchema = userSpecifiedSchema.orElse {
@@ -420,7 +435,7 @@ case class DataSource(
     val allPaths = paths ++ caseInsensitiveOptions.get("path")
     val outputPath = if (allPaths.length == 1) {
       val path = new Path(allPaths.head)
-      val fs = path.getFileSystem(sparkSession.sessionState.newHadoopConf())
+      val fs = path.getFileSystem(newHadoopConfiguration())
       path.makeQualified(fs.getUri, fs.getWorkingDirectory)
     } else {
       throw new IllegalArgumentException("Expected exactly one path to be specified, but " +
@@ -450,7 +465,7 @@ case class DataSource(
       mode = mode,
       catalogTable = catalogTable,
       fileIndex = fileIndex,
-      outputColumns = data.output)
+      outputColumnNames = data.output.map(_.name))
   }
 
   /**
@@ -460,9 +475,9 @@ case class DataSource(
    * @param mode The save mode for this writing.
    * @param data The input query plan that produces the data to be written. Note that this plan
    *             is analyzed and optimized.
-   * @param outputColumns The original output columns of the input query plan. The optimizer may not
-   *                      preserve the output column's names' case, so we need this parameter
-   *                      instead of `data.output`.
+   * @param outputColumnNames The original output column names of the input query plan. The
+   *                          optimizer may not preserve the output column's names' case, so we need
+   *                          this parameter instead of `data.output`.
    * @param physicalPlan The physical plan of the input query plan. We should run the writing
    *                     command with this physical plan instead of creating a new physical plan,
    *                     so that the metrics can be correctly linked to the given physical plan and
@@ -471,8 +486,9 @@ case class DataSource(
   def writeAndRead(
       mode: SaveMode,
       data: LogicalPlan,
-      outputColumns: Seq[Attribute],
+      outputColumnNames: Seq[String],
       physicalPlan: SparkPlan): BaseRelation = {
+    val outputColumns = DataWritingCommand.logicalPlanOutputWithNames(data, outputColumnNames)
     if (outputColumns.map(_.dataType).exists(_.isInstanceOf[CalendarIntervalType])) {
       throw new AnalysisException("Cannot save interval data type into external storage.")
     }
@@ -495,7 +511,9 @@ case class DataSource(
               s"Unable to resolve $name given [${data.output.map(_.name).mkString(", ")}]")
           }
         }
-        val resolved = cmd.copy(partitionColumns = resolvedPartCols, outputColumns = outputColumns)
+        val resolved = cmd.copy(
+          partitionColumns = resolvedPartCols,
+          outputColumnNames = outputColumnNames)
         resolved.run(sparkSession, physicalPlan)
         // Replace the schema with that of the DataFrame we just wrote out to avoid re-inferring
         copy(userSpecifiedSchema = Some(outputColumns.toStructType.asNullable)).resolveRelation()
@@ -537,12 +555,16 @@ case class DataSource(
       checkEmptyGlobPath: Boolean,
       checkFilesExist: Boolean): Seq[Path] = {
     val allPaths = caseInsensitiveOptions.get("path") ++ paths
-    val hadoopConf = sparkSession.sessionState.newHadoopConf()
+    val hadoopConf = newHadoopConfiguration()
     allPaths.flatMap { path =>
       val hdfsPath = new Path(path)
       val fs = hdfsPath.getFileSystem(hadoopConf)
       val qualified = hdfsPath.makeQualified(fs.getUri, fs.getWorkingDirectory)
-      val globPath = SparkHadoopUtil.get.globPathIfNecessary(fs, qualified)
+      val globPath = if (globPaths) {
+        SparkHadoopUtil.get.globPathIfNecessary(fs, qualified)
+      } else {
+        qualified :: Nil
+      }
 
       if (checkEmptyGlobPath && globPath.isEmpty) {
         throw new AnalysisException(s"Path does not exist: $qualified")
@@ -733,4 +755,9 @@ object DataSource extends Logging {
          """.stripMargin)
     }
   }
+
+  /**
+   * The key in the "options" map for deciding whether or not to glob paths before use.
+   */
+  val GLOB_PATHS_KEY = "__globPaths__"
 }

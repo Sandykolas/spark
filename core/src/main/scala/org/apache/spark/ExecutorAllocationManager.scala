@@ -25,7 +25,7 @@ import scala.util.control.{ControlThrowable, NonFatal}
 
 import com.codahale.metrics.{Gauge, MetricRegistry}
 
-import org.apache.spark.internal.Logging
+import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.internal.config._
 import org.apache.spark.metrics.source.Source
 import org.apache.spark.scheduler._
@@ -44,8 +44,8 @@ import org.apache.spark.util.{Clock, SystemClock, ThreadUtils, Utils}
  * executors that could run all current running and pending tasks at once.
  *
  * Increasing the target number of executors happens in response to backlogged tasks waiting to be
- * scheduled. If the scheduler queue is not drained in N seconds, then new executors are added. If
- * the queue persists for another M seconds, then more executors are added and so on. The number
+ * scheduled. If the scheduler queue is not drained in M seconds, then new executors are added. If
+ * the queue persists for another N seconds, then more executors are added and so on. The number
  * added in each round increases exponentially from the previous round until an upper bound has been
  * reached. The upper bound is based both on a configured property and on the current number of
  * running and pending tasks, as described above.
@@ -212,7 +212,7 @@ private[spark] class ExecutorAllocationManager(
     }
     // Require external shuffle service for dynamic allocation
     // Otherwise, we may lose shuffle files when killing executors
-    if (!conf.getBoolean("spark.shuffle.service.enabled", false) && !testing) {
+    if (!conf.get(config.SHUFFLE_SERVICE_ENABLED) && !testing) {
       throw new SparkException("Dynamic allocation of executors requires the external " +
         "shuffle service. You may enable this through spark.shuffle.service.enabled.")
     }
@@ -306,8 +306,6 @@ private[spark] class ExecutorAllocationManager(
   private def schedule(): Unit = synchronized {
     val now = clock.getTimeMillis
 
-    updateAndSyncNumExecutorsTarget(now)
-
     val executorIdsToBeRemoved = ArrayBuffer[String]()
     removeTimes.retain { case (executorId, expireTime) =>
       val expired = now >= expireTime
@@ -317,6 +315,8 @@ private[spark] class ExecutorAllocationManager(
       }
       !expired
     }
+    // Update executor target number only after initializing flag is unset
+    updateAndSyncNumExecutorsTarget(now)
     if (executorIdsToBeRemoved.nonEmpty) {
       removeExecutors(executorIdsToBeRemoved)
     }
@@ -719,10 +719,15 @@ private[spark] class ExecutorAllocationManager(
         if (stageIdToNumRunningTask.contains(stageId)) {
           stageIdToNumRunningTask(stageId) += 1
         }
-        // This guards against the race condition in which the `SparkListenerTaskStart`
-        // event is posted before the `SparkListenerBlockManagerAdded` event, which is
-        // possible because these events are posted in different threads. (see SPARK-4951)
-        if (!allocationManager.executorIds.contains(executorId)) {
+        // This guards against the following race condition:
+        // 1. The `SparkListenerTaskStart` event is posted before the
+        // `SparkListenerExecutorAdded` event
+        // 2. The `SparkListenerExecutorRemoved` event is posted before the
+        // `SparkListenerTaskStart` event
+        // Above cases are possible because these events are posted in different threads.
+        // (see SPARK-4951 SPARK-26927)
+        if (!allocationManager.executorIds.contains(executorId) &&
+            client.getExecutorIds().contains(executorId)) {
           allocationManager.onExecutorAdded(executorId)
         }
 

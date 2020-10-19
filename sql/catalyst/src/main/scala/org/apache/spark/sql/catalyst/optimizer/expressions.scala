@@ -71,7 +71,7 @@ object ConstantFolding extends Rule[LogicalPlan] {
 object ConstantPropagation extends Rule[LogicalPlan] with PredicateHelper {
   def apply(plan: LogicalPlan): LogicalPlan = plan transform {
     case f: Filter =>
-      val (newCondition, _) = traverse(f.condition, replaceChildren = true)
+      val (newCondition, _) = traverse(f.condition, replaceChildren = true, nullIsFalse = true)
       if (newCondition.isDefined) {
         f.copy(condition = newCondition.get)
       } else {
@@ -92,22 +92,33 @@ object ConstantPropagation extends Rule[LogicalPlan] with PredicateHelper {
    * - Otherwise, stop traversal and propagate empty mapping.
    * @param condition condition to be traversed
    * @param replaceChildren whether to replace attributes with constant values in children
+   * @param nullIsFalse whether a boolean expression result can be considered to false e.g. in the
+   *                    case of `WHERE e`, null result of expression `e` means the same as if it
+   *                    resulted false
    * @return A tuple including:
    *         1. Option[Expression]: optional changed condition after traversal
    *         2. EqualityPredicates: propagated mapping of attribute => constant
    */
-  private def traverse(condition: Expression, replaceChildren: Boolean)
+  private def traverse(condition: Expression, replaceChildren: Boolean, nullIsFalse: Boolean)
     : (Option[Expression], EqualityPredicates) =
     condition match {
-      case e @ EqualTo(left: AttributeReference, right: Literal) => (None, Seq(((left, right), e)))
-      case e @ EqualTo(left: Literal, right: AttributeReference) => (None, Seq(((right, left), e)))
-      case e @ EqualNullSafe(left: AttributeReference, right: Literal) =>
+      case e @ EqualTo(left: AttributeReference, right: Literal)
+        if safeToReplace(left, nullIsFalse) =>
         (None, Seq(((left, right), e)))
-      case e @ EqualNullSafe(left: Literal, right: AttributeReference) =>
+      case e @ EqualTo(left: Literal, right: AttributeReference)
+        if safeToReplace(right, nullIsFalse) =>
+        (None, Seq(((right, left), e)))
+      case e @ EqualNullSafe(left: AttributeReference, right: Literal)
+        if safeToReplace(left, nullIsFalse) =>
+        (None, Seq(((left, right), e)))
+      case e @ EqualNullSafe(left: Literal, right: AttributeReference)
+        if safeToReplace(right, nullIsFalse) =>
         (None, Seq(((right, left), e)))
       case a: And =>
-        val (newLeft, equalityPredicatesLeft) = traverse(a.left, replaceChildren = false)
-        val (newRight, equalityPredicatesRight) = traverse(a.right, replaceChildren = false)
+        val (newLeft, equalityPredicatesLeft) =
+          traverse(a.left, replaceChildren = false, nullIsFalse)
+        val (newRight, equalityPredicatesRight) =
+          traverse(a.right, replaceChildren = false, nullIsFalse)
         val equalityPredicates = equalityPredicatesLeft ++ equalityPredicatesRight
         val newSelf = if (equalityPredicates.nonEmpty && replaceChildren) {
           Some(And(replaceConstants(newLeft.getOrElse(a.left), equalityPredicates),
@@ -122,8 +133,8 @@ object ConstantPropagation extends Rule[LogicalPlan] with PredicateHelper {
         (newSelf, equalityPredicates)
       case o: Or =>
         // Ignore the EqualityPredicates from children since they are only propagated through And.
-        val (newLeft, _) = traverse(o.left, replaceChildren = true)
-        val (newRight, _) = traverse(o.right, replaceChildren = true)
+        val (newLeft, _) = traverse(o.left, replaceChildren = true, nullIsFalse)
+        val (newRight, _) = traverse(o.right, replaceChildren = true, nullIsFalse)
         val newSelf = if (newLeft.isDefined || newRight.isDefined) {
           Some(Or(left = newLeft.getOrElse(o.left), right = newRight.getOrElse((o.right))))
         } else {
@@ -132,10 +143,18 @@ object ConstantPropagation extends Rule[LogicalPlan] with PredicateHelper {
         (newSelf, Seq.empty)
       case n: Not =>
         // Ignore the EqualityPredicates from children since they are only propagated through And.
-        val (newChild, _) = traverse(n.child, replaceChildren = true)
+        val (newChild, _) = traverse(n.child, replaceChildren = true, nullIsFalse = false)
         (newChild.map(Not), Seq.empty)
       case _ => (None, Seq.empty)
     }
+
+  // We need to take into account if an attribute is nullable and the context of the conjunctive
+  // expression. E.g. `SELECT * FROM t WHERE NOT(c = 1 AND c + 1 = 1)` where attribute `c` can be
+  // substituted into `1 + 1 = 1` if 'c' isn't nullable. If 'c' is nullable then the enclosing
+  // NOT prevents us to do the substitution as NOT flips the context (`nullIsFalse`) of what a
+  // null result of the enclosed expression means.
+  private def safeToReplace(ar: AttributeReference, nullIsFalse: Boolean) =
+    !ar.nullable || nullIsFalse
 
   private def replaceConstants(condition: Expression, equalityPredicates: EqualityPredicates)
     : Expression = {
@@ -263,23 +282,50 @@ object BooleanSimplification extends Rule[LogicalPlan] with PredicateHelper {
       case TrueLiteral Or _ => TrueLiteral
       case _ Or TrueLiteral => TrueLiteral
 
-      case a And b if Not(a).semanticEquals(b) => FalseLiteral
-      case a Or b if Not(a).semanticEquals(b) => TrueLiteral
-      case a And b if a.semanticEquals(Not(b)) => FalseLiteral
-      case a Or b if a.semanticEquals(Not(b)) => TrueLiteral
+      case a And b if Not(a).semanticEquals(b) =>
+        If(IsNull(a), Literal.create(null, a.dataType), FalseLiteral)
+      case a And b if a.semanticEquals(Not(b)) =>
+        If(IsNull(b), Literal.create(null, b.dataType), FalseLiteral)
+
+      case a Or b if Not(a).semanticEquals(b) =>
+        If(IsNull(a), Literal.create(null, a.dataType), TrueLiteral)
+      case a Or b if a.semanticEquals(Not(b)) =>
+        If(IsNull(b), Literal.create(null, b.dataType), TrueLiteral)
 
       case a And b if a.semanticEquals(b) => a
       case a Or b if a.semanticEquals(b) => a
 
-      case a And (b Or c) if Not(a).semanticEquals(b) => And(a, c)
-      case a And (b Or c) if Not(a).semanticEquals(c) => And(a, b)
-      case (a Or b) And c if a.semanticEquals(Not(c)) => And(b, c)
-      case (a Or b) And c if b.semanticEquals(Not(c)) => And(a, c)
+      // The following optimizations are applicable only when the operands are not nullable,
+      // since the three-value logic of AND and OR are different in NULL handling.
+      // See the chart:
+      // +---------+---------+---------+---------+
+      // | operand | operand |   OR    |   AND   |
+      // +---------+---------+---------+---------+
+      // | TRUE    | TRUE    | TRUE    | TRUE    |
+      // | TRUE    | FALSE   | TRUE    | FALSE   |
+      // | FALSE   | FALSE   | FALSE   | FALSE   |
+      // | UNKNOWN | TRUE    | TRUE    | UNKNOWN |
+      // | UNKNOWN | FALSE   | UNKNOWN | FALSE   |
+      // | UNKNOWN | UNKNOWN | UNKNOWN | UNKNOWN |
+      // +---------+---------+---------+---------+
 
-      case a Or (b And c) if Not(a).semanticEquals(b) => Or(a, c)
-      case a Or (b And c) if Not(a).semanticEquals(c) => Or(a, b)
-      case (a And b) Or c if a.semanticEquals(Not(c)) => Or(b, c)
-      case (a And b) Or c if b.semanticEquals(Not(c)) => Or(a, c)
+      // (NULL And (NULL Or FALSE)) = NULL, but (NULL And FALSE) = FALSE. Thus, a can't be nullable.
+      case a And (b Or c) if !a.nullable && Not(a).semanticEquals(b) => And(a, c)
+      // (NULL And (FALSE Or NULL)) = NULL, but (NULL And FALSE) = FALSE. Thus, a can't be nullable.
+      case a And (b Or c) if !a.nullable && Not(a).semanticEquals(c) => And(a, b)
+      // ((NULL Or FALSE) And NULL) = NULL, but (FALSE And NULL) = FALSE. Thus, c can't be nullable.
+      case (a Or b) And c if !c.nullable && a.semanticEquals(Not(c)) => And(b, c)
+      // ((FALSE Or NULL) And NULL) = NULL, but (FALSE And NULL) = FALSE. Thus, c can't be nullable.
+      case (a Or b) And c if !c.nullable && b.semanticEquals(Not(c)) => And(a, c)
+
+      // (NULL Or (NULL And TRUE)) = NULL, but (NULL Or TRUE) = TRUE. Thus, a can't be nullable.
+      case a Or (b And c) if !a.nullable && Not(a).semanticEquals(b) => Or(a, c)
+      // (NULL Or (TRUE And NULL)) = NULL, but (NULL Or TRUE) = TRUE. Thus, a can't be nullable.
+      case a Or (b And c) if !a.nullable && Not(a).semanticEquals(c) => Or(a, b)
+      // ((NULL And TRUE) Or NULL) = NULL, but (TRUE Or NULL) = TRUE. Thus, c can't be nullable.
+      case (a And b) Or c if !c.nullable && a.semanticEquals(Not(c)) => Or(b, c)
+      // ((TRUE And NULL) Or NULL) = NULL, but (TRUE Or NULL) = TRUE. Thus, c can't be nullable.
+      case (a And b) Or c if !c.nullable && b.semanticEquals(Not(c)) => Or(a, c)
 
       // Common factor elimination for conjunction
       case and @ (left And right) =>

@@ -25,7 +25,6 @@ To build Spark and its example programs, run:
 
 (You do not need to do this if you downloaded a pre-built package.)
 
-You can build Spark using more than one thread by using the -T option with Maven, see ["Parallel builds in Maven 3"](https://cwiki.apache.org/confluence/display/MAVEN/Parallel+builds+in+Maven+3).
 More detailed documentation is available from the project site, at
 ["Building Spark"](http://spark.apache.org/docs/latest/building-spark.html).
 
@@ -90,7 +89,7 @@ storage systems. Because the protocols have changed in different versions of
 Hadoop, you must build Spark against the same version that your cluster runs.
 
 Please refer to the build documentation at
-["Specifying the Hadoop Version"](http://spark.apache.org/docs/latest/building-spark.html#specifying-the-hadoop-version)
+["Specifying the Hadoop Version and Enabling YARN"](http://spark.apache.org/docs/latest/building-spark.html#specifying-the-hadoop-version-and-enabling-yarn)
 for detailed guidance on building for a particular distribution of Hadoop, including
 building for particular Hive and Hive Thriftserver distributions.
 

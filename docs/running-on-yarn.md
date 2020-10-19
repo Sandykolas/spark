@@ -9,6 +9,11 @@ Support for running on [YARN (Hadoop
 NextGen)](http://hadoop.apache.org/docs/stable/hadoop-yarn/hadoop-yarn-site/YARN.html)
 was added to Spark in version 0.6.0, and improved in subsequent releases.
 
+# Security
+
+Security in Spark is OFF by default. This could mean you are vulnerable to attack by default.
+Please see [Spark Security](security.html) and the specific security sections in this doc before running Spark.
+
 # Launching Spark on YARN
 
 Ensure that `HADOOP_CONF_DIR` or `YARN_CONF_DIR` points to the directory which contains the (client side) configuration files for the Hadoop cluster.
@@ -40,7 +45,7 @@ For example:
         examples/jars/spark-examples*.jar \
         10
 
-The above starts a YARN client program which starts the default Application Master. Then SparkPi will be run as a child thread of Application Master. The client will periodically poll the Application Master for status updates and display them in the console. The client will exit once your application has finished running.  Refer to the "Debugging your Application" section below for how to see driver and executor logs.
+The above starts a YARN client program which starts the default Application Master. Then SparkPi will be run as a child thread of Application Master. The client will periodically poll the Application Master for status updates and display them in the console. The client will exit once your application has finished running.  Refer to the [Debugging your Application](#debugging-your-application) section below for how to see driver and executor logs.
 
 To launch a Spark application in `client` mode, do the same, but replace `cluster` with `client`. The following shows how you can run `spark-shell` in `client` mode:
 
@@ -64,7 +69,7 @@ Running Spark on YARN requires a binary distribution of Spark which is built wit
 Binary distributions can be downloaded from the [downloads page](https://spark.apache.org/downloads.html) of the project website.
 To build Spark yourself, refer to [Building Spark](building-spark.html).
 
-To make Spark runtime jars accessible from YARN side, you can specify `spark.yarn.archive` or `spark.yarn.jars`. For details please refer to [Spark Properties](running-on-yarn.html#spark-properties). If neither `spark.yarn.archive` nor `spark.yarn.jars` is specified, Spark will create a zip file with all jars under `$SPARK_HOME/jars` and upload it to the distributed cache.
+To make Spark runtime jars accessible from YARN side, you can specify `spark.yarn.archive` or `spark.yarn.jars`. For details please refer to [Spark Properties](#spark-properties). If neither `spark.yarn.archive` nor `spark.yarn.jars` is specified, Spark will create a zip file with all jars under `$SPARK_HOME/jars` and upload it to the distributed cache.
 
 # Configuration
 
@@ -300,6 +305,16 @@ To use a custom metrics.properties for the application master and executors, upd
   <td>(none)</td>
   <td>
     Set a special library path to use when launching the YARN Application Master in client mode.
+  </td>
+</tr>
+<tr>
+  <td><code>spark.yarn.populateHadoopClasspath</code></td>
+  <td>true</td>
+  <td>
+    Whether to populate Hadoop classpath from <code>yarn.application.classpath</code> and
+    <code>mapreduce.application.classpath</code> Note that if this is set to <code>false</code>, 
+    it requires a <code>with-Hadoop</code> Spark distribution that bundles Hadoop runtime or
+    user has to provide a Hadoop installation separately.
   </td>
 </tr>
 <tr>

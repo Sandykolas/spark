@@ -138,11 +138,10 @@ parallelize <- function(sc, coll, numSlices = 1) {
 
   sizeLimit <- getMaxAllocationLimit(sc)
   objectSize <- object.size(coll)
+  len <- length(coll)
 
   # For large objects we make sure the size of each slice is also smaller than sizeLimit
-  numSerializedSlices <- max(numSlices, ceiling(objectSize / sizeLimit))
-  if (numSerializedSlices > length(coll))
-    numSerializedSlices <- length(coll)
+  numSerializedSlices <- min(len, max(numSlices, ceiling(objectSize / sizeLimit)))
 
   # Generate the slice ids to put each row
   # For instance, for numSerializedSlices of 22, length of 50
@@ -153,8 +152,8 @@ parallelize <- function(sc, coll, numSlices = 1) {
   splits <- if (numSerializedSlices > 0) {
     unlist(lapply(0: (numSerializedSlices - 1), function(x) {
       # nolint start
-      start <- trunc((x * length(coll)) / numSerializedSlices)
-      end <- trunc(((x + 1) * length(coll)) / numSerializedSlices)
+      start <- trunc((as.numeric(x) * len) / numSerializedSlices)
+      end <- trunc(((as.numeric(x) + 1) * len) / numSerializedSlices)
       # nolint end
       rep(start, end - start)
     }))
@@ -168,18 +167,30 @@ parallelize <- function(sc, coll, numSlices = 1) {
   # 2-tuples of raws
   serializedSlices <- lapply(slices, serialize, connection = NULL)
 
-  # The PRC backend cannot handle arguments larger than 2GB (INT_MAX)
+  # The RPC backend cannot handle arguments larger than 2GB (INT_MAX)
   # If serialized data is safely less than that threshold we send it over the PRC channel.
   # Otherwise, we write it to a file and send the file name
   if (objectSize < sizeLimit) {
     jrdd <- callJStatic("org.apache.spark.api.r.RRDD", "createRDDFromArray", sc, serializedSlices)
   } else {
-    fileName <- writeToTempFile(serializedSlices)
-    jrdd <- tryCatch(callJStatic(
-        "org.apache.spark.api.r.RRDD", "createRDDFromFile", sc, fileName, as.integer(numSlices)),
-      finally = {
-        file.remove(fileName)
-    })
+    if (callJStatic("org.apache.spark.api.r.RUtils", "getEncryptionEnabled", sc)) {
+      # the length of slices here is the parallelism to use in the jvm's sc.parallelize()
+      parallelism <- as.integer(numSlices)
+      jserver <- newJObject("org.apache.spark.api.r.RParallelizeServer", sc, parallelism)
+      authSecret <- callJMethod(jserver, "secret")
+      port <- callJMethod(jserver, "port")
+      conn <- socketConnection(port = port, blocking = TRUE, open = "wb", timeout = 1500)
+      doServerAuth(conn, authSecret)
+      writeToConnection(serializedSlices, conn)
+      jrdd <- callJMethod(jserver, "getResult")
+    } else {
+      fileName <- writeToTempFile(serializedSlices)
+      jrdd <- tryCatch(callJStatic(
+          "org.apache.spark.api.r.RRDD", "createRDDFromFile", sc, fileName, as.integer(numSlices)),
+        finally = {
+          file.remove(fileName)
+      })
+    }
   }
 
   RDD(jrdd, "byte")
@@ -195,14 +206,21 @@ getMaxAllocationLimit <- function(sc) {
   ))
 }
 
+writeToConnection <- function(serializedSlices, conn) {
+  tryCatch({
+    for (slice in serializedSlices) {
+      writeBin(as.integer(length(slice)), conn, endian = "big")
+      writeBin(slice, conn, endian = "big")
+    }
+  }, finally = {
+    close(conn)
+  })
+}
+
 writeToTempFile <- function(serializedSlices) {
   fileName <- tempfile()
   conn <- file(fileName, "wb")
-  for (slice in serializedSlices) {
-    writeBin(as.integer(length(slice)), conn, endian = "big")
-    writeBin(slice, conn, endian = "big")
-  }
-  close(conn)
+  writeToConnection(serializedSlices, conn)
   fileName
 }
 
@@ -279,7 +297,7 @@ broadcastRDD <- function(sc, object) {
 #' Set the checkpoint directory
 #'
 #' Set the directory under which RDDs are going to be checkpointed. The
-#' directory must be a HDFS path if running on a cluster.
+#' directory must be an HDFS path if running on a cluster.
 #'
 #' @param sc Spark Context to use
 #' @param dirName Directory path
@@ -303,7 +321,8 @@ setCheckpointDirSC <- function(sc, dirName) {
 #'
 #' A directory can be given if the recursive option is set to true.
 #' Currently directories are only supported for Hadoop-supported filesystems.
-#' Refer Hadoop-supported filesystems at \url{https://wiki.apache.org/hadoop/HCFS}.
+#' Refer Hadoop-supported filesystems at
+#' \url{https://cwiki.apache.org/confluence/display/HADOOP2/HCFS}.
 #'
 #' Note: A path can be added only once. Subsequent additions of the same path are ignored.
 #'
@@ -393,7 +412,7 @@ spark.getSparkFiles <- function(fileName) {
 #' @examples
 #'\dontrun{
 #' sparkR.session()
-#' doubled <- spark.lapply(1:10, function(x){2 * x})
+#' doubled <- spark.lapply(1:10, function(x) {2 * x})
 #'}
 #' @note spark.lapply since 2.0.0
 spark.lapply <- function(list, func) {
@@ -423,7 +442,7 @@ setLogLevel <- function(level) {
 #' Set checkpoint directory
 #'
 #' Set the directory under which SparkDataFrame are going to be checkpointed. The directory must be
-#' a HDFS path if running on a cluster.
+#' an HDFS path if running on a cluster.
 #'
 #' @rdname setCheckpointDir
 #' @param directory Directory path to checkpoint to

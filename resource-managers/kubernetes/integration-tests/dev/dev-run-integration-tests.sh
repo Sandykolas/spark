@@ -28,6 +28,12 @@ NAMESPACE=
 SERVICE_ACCOUNT=
 INCLUDE_TAGS="k8s"
 EXCLUDE_TAGS=
+MVN="$TEST_ROOT_DIR/build/mvn"
+
+SCALA_VERSION=$("$MVN" help:evaluate -Dexpression=scala.binary.version 2>/dev/null\
+    | grep -v "INFO"\
+    | grep -v "WARNING"\
+    | tail -n 1)
 
 # Parse arguments
 while (( "$#" )); do
@@ -103,4 +109,4 @@ then
   properties=( ${properties[@]} -Dtest.exclude.tags=$EXCLUDE_TAGS )
 fi
 
-$TEST_ROOT_DIR/build/mvn integration-test -f $TEST_ROOT_DIR/pom.xml -pl resource-managers/kubernetes/integration-tests -am -Pkubernetes -Phadoop-2.7 ${properties[@]}
+$TEST_ROOT_DIR/build/mvn integration-test -f $TEST_ROOT_DIR/pom.xml -pl resource-managers/kubernetes/integration-tests -am -Pscala-$SCALA_VERSION -Pkubernetes -Pkubernetes-integration-tests -Phadoop-2.7 ${properties[@]}

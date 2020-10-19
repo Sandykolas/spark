@@ -31,6 +31,7 @@ import org.apache.spark.internal.io.HadoopMapReduceCommitProtocol
 import org.apache.spark.scheduler.{SparkListener, SparkListenerJobStart}
 import org.apache.spark.sql._
 import org.apache.spark.sql.catalyst.TableIdentifier
+import org.apache.spark.sql.execution.datasources.DataSourceUtils
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources._
 import org.apache.spark.sql.types._
@@ -209,6 +210,46 @@ class DataFrameReaderWriterSuite extends QueryTest with SharedSQLContext with Be
     assert(LastOptions.parameters("opt1") == "1")
     assert(LastOptions.parameters("opt2") == "2")
     assert(LastOptions.parameters("opt3") == "3")
+  }
+
+  test("SPARK-32364: path argument of load function should override all existing options") {
+    spark.read
+      .format("org.apache.spark.sql.test")
+      .option("paTh", "1")
+      .option("PATH", "2")
+      .option("Path", "3")
+      .option("patH", "4")
+      .load("5")
+    assert(LastOptions.parameters("path") == "5")
+  }
+
+  test("SPARK-32364: path argument of save function should override all existing options") {
+    Seq(1).toDF.write
+      .format("org.apache.spark.sql.test")
+      .option("paTh", "1")
+      .option("PATH", "2")
+      .option("Path", "3")
+      .option("patH", "4")
+      .save("5")
+    assert(LastOptions.parameters("path") == "5")
+  }
+
+  test("pass partitionBy as options") {
+    Seq(true, false).foreach { flag =>
+      withSQLConf(SQLConf.LEGACY_PASS_PARTITION_BY_AS_OPTIONS.key -> s"$flag") {
+        Seq(1).toDF.write
+          .format("org.apache.spark.sql.test")
+          .partitionBy("col1", "col2")
+          .save()
+
+        if (flag) {
+          val partColumns = LastOptions.parameters(DataSourceUtils.PARTITIONING_COLUMNS_KEY)
+          assert(DataSourceUtils.decodePartitioningColumns(partColumns) === Seq("col1", "col2"))
+        } else {
+          assert(!LastOptions.parameters.contains(DataSourceUtils.PARTITIONING_COLUMNS_KEY))
+        }
+      }
+    }
   }
 
   test("save mode") {
@@ -805,6 +846,80 @@ class DataFrameReaderWriterSuite extends QueryTest with SharedSQLContext with Be
     }
   }
 
+  test("Insert overwrite table command should output correct schema: basic") {
+    withTable("tbl", "tbl2") {
+      withView("view1") {
+        val df = spark.range(10).toDF("id")
+        df.write.format("parquet").saveAsTable("tbl")
+        spark.sql("CREATE VIEW view1 AS SELECT id FROM tbl")
+        spark.sql("CREATE TABLE tbl2(ID long) USING parquet")
+        spark.sql("INSERT OVERWRITE TABLE tbl2 SELECT ID FROM view1")
+        val identifier = TableIdentifier("tbl2")
+        val location = spark.sessionState.catalog.getTableMetadata(identifier).location.toString
+        val expectedSchema = StructType(Seq(StructField("ID", LongType, true)))
+        assert(spark.read.parquet(location).schema == expectedSchema)
+        checkAnswer(spark.table("tbl2"), df)
+      }
+    }
+  }
+
+  test("Insert overwrite table command should output correct schema: complex") {
+    withTable("tbl", "tbl2") {
+      withView("view1") {
+        val df = spark.range(10).map(x => (x, x.toInt, x.toInt)).toDF("col1", "col2", "col3")
+        df.write.format("parquet").saveAsTable("tbl")
+        spark.sql("CREATE VIEW view1 AS SELECT * FROM tbl")
+        spark.sql("CREATE TABLE tbl2(COL1 long, COL2 int, COL3 int) USING parquet PARTITIONED " +
+          "BY (COL2) CLUSTERED BY (COL3) INTO 3 BUCKETS")
+        spark.sql("INSERT OVERWRITE TABLE tbl2 SELECT COL1, COL2, COL3 FROM view1")
+        val identifier = TableIdentifier("tbl2")
+        val location = spark.sessionState.catalog.getTableMetadata(identifier).location.toString
+        val expectedSchema = StructType(Seq(
+          StructField("COL1", LongType, true),
+          StructField("COL3", IntegerType, true),
+          StructField("COL2", IntegerType, true)))
+        assert(spark.read.parquet(location).schema == expectedSchema)
+        checkAnswer(spark.table("tbl2"), df)
+      }
+    }
+  }
+
+  test("Create table as select command should output correct schema: basic") {
+    withTable("tbl", "tbl2") {
+      withView("view1") {
+        val df = spark.range(10).toDF("id")
+        df.write.format("parquet").saveAsTable("tbl")
+        spark.sql("CREATE VIEW view1 AS SELECT id FROM tbl")
+        spark.sql("CREATE TABLE tbl2 USING parquet AS SELECT ID FROM view1")
+        val identifier = TableIdentifier("tbl2")
+        val location = spark.sessionState.catalog.getTableMetadata(identifier).location.toString
+        val expectedSchema = StructType(Seq(StructField("ID", LongType, true)))
+        assert(spark.read.parquet(location).schema == expectedSchema)
+        checkAnswer(spark.table("tbl2"), df)
+      }
+    }
+  }
+
+  test("Create table as select command should output correct schema: complex") {
+    withTable("tbl", "tbl2") {
+      withView("view1") {
+        val df = spark.range(10).map(x => (x, x.toInt, x.toInt)).toDF("col1", "col2", "col3")
+        df.write.format("parquet").saveAsTable("tbl")
+        spark.sql("CREATE VIEW view1 AS SELECT * FROM tbl")
+        spark.sql("CREATE TABLE tbl2 USING parquet PARTITIONED BY (COL2) " +
+          "CLUSTERED BY (COL3) INTO 3 BUCKETS AS SELECT COL1, COL2, COL3 FROM view1")
+        val identifier = TableIdentifier("tbl2")
+        val location = spark.sessionState.catalog.getTableMetadata(identifier).location.toString
+        val expectedSchema = StructType(Seq(
+          StructField("COL1", LongType, true),
+          StructField("COL3", IntegerType, true),
+          StructField("COL2", IntegerType, true)))
+        assert(spark.read.parquet(location).schema == expectedSchema)
+        checkAnswer(spark.table("tbl2"), df)
+      }
+    }
+  }
+
   test("use Spark jobs to list files") {
     withSQLConf(SQLConf.PARALLEL_PARTITION_DISCOVERY_THRESHOLD.key -> "1") {
       withTempDir { dir =>
@@ -829,6 +944,29 @@ class DataFrameReaderWriterSuite extends QueryTest with SharedSQLContext with Be
           sparkContext.removeSparkListener(jobListener)
         }
       }
+    }
+  }
+
+  test("SPARK-32810: CSV and JSON data sources should be able to read files with " +
+    "escaped glob metacharacter in the paths") {
+    def escape(str: String): String = {
+      """(\[|\]|\{|\})""".r.replaceAllIn(str, """\\$1""")
+    }
+
+    withTempDir { dir =>
+      val basePath = dir.getCanonicalPath
+
+      // test CSV writer / reader without specifying schema
+      val csvTableName = "[abc]"
+      spark.range(3).coalesce(1).write.csv(s"$basePath/$csvTableName")
+      val csvDf = spark.read.csv(s"$basePath/${escape(csvTableName)}")
+      assert(csvDf.collect sameElements Array(Row("0"), Row("1"), Row("2")))
+
+      // test JSON writer / reader without specifying schema
+      val jsonTableName = "{def}"
+      spark.range(3).coalesce(1).write.json(s"$basePath/$jsonTableName")
+      val jsonDf = spark.read.json(s"$basePath/${escape(jsonTableName)}")
+      assert(jsonDf.collect sameElements Array(Row(0), Row(1), Row(2)))
     }
   }
 }

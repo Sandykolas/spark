@@ -51,6 +51,7 @@ which contains two batches of two objects:
 """
 
 import sys
+from distutils.version import LooseVersion
 from itertools import chain, product
 import marshal
 import struct
@@ -185,27 +186,34 @@ class FramedSerializer(Serializer):
         raise NotImplementedError
 
 
-class ArrowSerializer(FramedSerializer):
+class ArrowStreamSerializer(Serializer):
     """
-    Serializes bytes as Arrow data with the Arrow file format.
+    Serializes Arrow record batches as a stream.
     """
 
-    def dumps(self, batch):
+    def dump_stream(self, iterator, stream):
         import pyarrow as pa
-        import io
-        sink = io.BytesIO()
-        writer = pa.RecordBatchFileWriter(sink, batch.schema)
-        writer.write_batch(batch)
-        writer.close()
-        return sink.getvalue()
+        writer = None
+        try:
+            for batch in iterator:
+                if writer is None:
+                    writer = pa.RecordBatchStreamWriter(stream, batch.schema)
+                writer.write_batch(batch)
+        finally:
+            if writer is not None:
+                writer.close()
 
-    def loads(self, obj):
+    def load_stream(self, stream):
         import pyarrow as pa
-        reader = pa.RecordBatchFileReader(pa.BufferReader(obj))
-        return reader.read_all()
+        if LooseVersion(pa.__version__) >= "0.12.0":
+            reader = pa.ipc.open_stream(stream)
+        else:
+            reader = pa.open_stream(stream)
+        for batch in reader:
+            yield batch
 
     def __repr__(self):
-        return "ArrowSerializer"
+        return "ArrowStreamSerializer"
 
 
 def _create_batch(series, timezone):
@@ -244,7 +252,10 @@ def _create_batch(series, timezone):
             # TODO: see ARROW-2432. Remove when the minimum PyArrow version becomes 0.10.0.
             return pa.Array.from_pandas(s.apply(
                 lambda v: decimal.Decimal('NaN') if v is None else v), mask=mask, type=t)
-        return pa.Array.from_pandas(s, mask=mask, type=t)
+        elif LooseVersion(pa.__version__) < LooseVersion("0.11.0"):
+            # TODO: see ARROW-1949. Remove when the minimum PyArrow version becomes 0.11.0.
+            return pa.Array.from_pandas(s, mask=mask, type=t)
+        return pa.Array.from_pandas(s, mask=mask, type=t, safe=False)
 
     arrs = [create_array(s, t) for s, t in series]
     return pa.RecordBatch.from_arrays(arrs, ["_%d" % i for i in xrange(len(arrs))])
@@ -291,7 +302,10 @@ class ArrowStreamPandasSerializer(Serializer):
         Deserialize ArrowRecordBatches to an Arrow table and return as a list of pandas.Series.
         """
         import pyarrow as pa
-        reader = pa.open_stream(stream)
+        if LooseVersion(pa.__version__) >= "0.12.0":
+            reader = pa.ipc.open_stream(stream)
+        else:
+            reader = pa.open_stream(stream)
 
         for batch in reader:
             yield [self.arrow_to_pandas(c) for c in pa.Table.from_batches([batch]).itercolumns()]
@@ -725,6 +739,57 @@ def read_bool(stream):
 def write_with_length(obj, stream):
     write_int(len(obj), stream)
     stream.write(obj)
+
+
+class ChunkedStream(object):
+
+    """
+    This is a file-like object takes a stream of data, of unknown length, and breaks it into fixed
+    length frames.  The intended use case is serializing large data and sending it immediately over
+    a socket -- we do not want to buffer the entire data before sending it, but the receiving end
+    needs to know whether or not there is more data coming.
+
+    It works by buffering the incoming data in some fixed-size chunks.  If the buffer is full, it
+    first sends the buffer size, then the data.  This repeats as long as there is more data to send.
+    When this is closed, it sends the length of whatever data is in the buffer, then that data, and
+    finally a "length" of -1 to indicate the stream has completed.
+    """
+
+    def __init__(self, wrapped, buffer_size):
+        self.buffer_size = buffer_size
+        self.buffer = bytearray(buffer_size)
+        self.current_pos = 0
+        self.wrapped = wrapped
+
+    def write(self, bytes):
+        byte_pos = 0
+        byte_remaining = len(bytes)
+        while byte_remaining > 0:
+            new_pos = byte_remaining + self.current_pos
+            if new_pos < self.buffer_size:
+                # just put it in our buffer
+                self.buffer[self.current_pos:new_pos] = bytes[byte_pos:]
+                self.current_pos = new_pos
+                byte_remaining = 0
+            else:
+                # fill the buffer, send the length then the contents, and start filling again
+                space_left = self.buffer_size - self.current_pos
+                new_byte_pos = byte_pos + space_left
+                self.buffer[self.current_pos:self.buffer_size] = bytes[byte_pos:new_byte_pos]
+                write_int(self.buffer_size, self.wrapped)
+                self.wrapped.write(self.buffer)
+                byte_remaining -= space_left
+                byte_pos = new_byte_pos
+                self.current_pos = 0
+
+    def close(self):
+        # if there is anything left in the buffer, write it out first
+        if self.current_pos > 0:
+            write_int(self.current_pos, self.wrapped)
+            self.wrapped.write(self.buffer[:self.current_pos])
+        # -1 length indicates to the receiving end that we're done.
+        write_int(-1, self.wrapped)
+        self.wrapped.close()
 
 
 if __name__ == '__main__':

@@ -25,6 +25,7 @@ import org.apache.spark.executor.TaskMetrics
 import org.apache.spark.internal.config.APP_CALLER_CONTEXT
 import org.apache.spark.memory.{MemoryMode, TaskMemoryManager}
 import org.apache.spark.metrics.MetricsSystem
+import org.apache.spark.rdd.InputFileBlockHolder
 import org.apache.spark.util._
 
 /**
@@ -82,30 +83,24 @@ private[spark] abstract class Task[T](
     SparkEnv.get.blockManager.registerTask(taskAttemptId)
     // TODO SPARK-24874 Allow create BarrierTaskContext based on partitions, instead of whether
     // the stage is barrier.
+    val taskContext = new TaskContextImpl(
+      stageId,
+      stageAttemptId, // stageAttemptId and stageAttemptNumber are semantically equal
+      partitionId,
+      taskAttemptId,
+      attemptNumber,
+      taskMemoryManager,
+      localProperties,
+      metricsSystem,
+      metrics)
+
     context = if (isBarrier) {
-      new BarrierTaskContext(
-        stageId,
-        stageAttemptId, // stageAttemptId and stageAttemptNumber are semantically equal
-        partitionId,
-        taskAttemptId,
-        attemptNumber,
-        taskMemoryManager,
-        localProperties,
-        metricsSystem,
-        metrics)
+      new BarrierTaskContext(taskContext)
     } else {
-      new TaskContextImpl(
-        stageId,
-        stageAttemptId, // stageAttemptId and stageAttemptNumber are semantically equal
-        partitionId,
-        taskAttemptId,
-        attemptNumber,
-        taskMemoryManager,
-        localProperties,
-        metricsSystem,
-        metrics)
+      taskContext
     }
 
+    InputFileBlockHolder.initialize()
     TaskContext.setTaskContext(context)
     taskThread = Thread.currentThread()
 
@@ -161,6 +156,7 @@ private[spark] abstract class Task[T](
           // Though we unset the ThreadLocal here, the context member variable itself is still
           // queried directly in the TaskRunner to check for FetchFailedExceptions.
           TaskContext.unset()
+          InputFileBlockHolder.unset()
         }
       }
     }
@@ -180,7 +176,7 @@ private[spark] abstract class Task[T](
   var epoch: Long = -1
 
   // Task context, to be initialized in run().
-  @transient var context: TaskContextImpl = _
+  @transient var context: TaskContext = _
 
   // The actual Thread on which the task is running, if any. Initialized in run().
   @volatile @transient private var taskThread: Thread = _

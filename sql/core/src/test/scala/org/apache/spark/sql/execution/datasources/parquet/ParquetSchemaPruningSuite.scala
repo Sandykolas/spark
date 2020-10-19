@@ -25,6 +25,7 @@ import org.apache.spark.sql.{DataFrame, QueryTest, Row}
 import org.apache.spark.sql.catalyst.SchemaPruningTest
 import org.apache.spark.sql.catalyst.parser.CatalystSqlParser
 import org.apache.spark.sql.execution.FileSourceScanExec
+import org.apache.spark.sql.functions._
 import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.test.SharedSQLContext
 import org.apache.spark.sql.types.StructType
@@ -35,22 +36,29 @@ class ParquetSchemaPruningSuite
     with SchemaPruningTest
     with SharedSQLContext {
   case class FullName(first: String, middle: String, last: String)
+  case class Company(name: String, address: String)
+  case class Employer(id: Int, company: Company)
   case class Contact(
     id: Int,
     name: FullName,
     address: String,
     pets: Int,
     friends: Array[FullName] = Array.empty,
-    relatives: Map[String, FullName] = Map.empty)
+    relatives: Map[String, FullName] = Map.empty,
+    employer: Employer = null)
 
   val janeDoe = FullName("Jane", "X.", "Doe")
   val johnDoe = FullName("John", "Y.", "Doe")
   val susanSmith = FullName("Susan", "Z.", "Smith")
 
+  val employer = Employer(0, Company("abc", "123 Business Street"))
+  val employerWithNullCompany = Employer(1, null)
+
   private val contacts =
     Contact(0, janeDoe, "123 Main Street", 1, friends = Array(susanSmith),
-      relatives = Map("brother" -> johnDoe)) ::
-    Contact(1, johnDoe, "321 Wall Street", 3, relatives = Map("sister" -> janeDoe)) :: Nil
+      relatives = Map("brother" -> johnDoe), employer = employer) ::
+    Contact(1, johnDoe, "321 Wall Street", 3, relatives = Map("sister" -> janeDoe),
+      employer = employerWithNullCompany) :: Nil
 
   case class Name(first: String, last: String)
   case class BriefContact(id: Int, name: Name, address: String)
@@ -66,13 +74,14 @@ class ParquetSchemaPruningSuite
     pets: Int,
     friends: Array[FullName] = Array(),
     relatives: Map[String, FullName] = Map(),
+    employer: Employer = null,
     p: Int)
 
   case class BriefContactWithDataPartitionColumn(id: Int, name: Name, address: String, p: Int)
 
   private val contactsWithDataPartitionColumn =
-    contacts.map { case Contact(id, name, address, pets, friends, relatives) =>
-      ContactWithDataPartitionColumn(id, name, address, pets, friends, relatives, 1) }
+    contacts.map { case Contact(id, name, address, pets, friends, relatives, employer) =>
+      ContactWithDataPartitionColumn(id, name, address, pets, friends, relatives, employer, 1) }
   private val briefContactsWithDataPartitionColumn =
     briefContacts.map { case BriefContact(id, name, address) =>
       BriefContactWithDataPartitionColumn(id, name, address, 2) }
@@ -155,21 +164,114 @@ class ParquetSchemaPruningSuite
       Row(null) :: Row(null) :: Nil)
   }
 
+  testSchemaPruning("select a single complex field and in where clause") {
+    val query1 = sql("select name.first from contacts where name.first = 'Jane'")
+    checkScan(query1, "struct<name:struct<first:string>>")
+    checkAnswer(query1, Row("Jane") :: Nil)
+
+    val query2 = sql("select name.first, name.last from contacts where name.first = 'Jane'")
+    checkScan(query2, "struct<name:struct<first:string,last:string>>")
+    checkAnswer(query2, Row("Jane", "Doe") :: Nil)
+
+    val query3 = sql("select name.first from contacts " +
+      "where employer.company.name = 'abc' and p = 1")
+    checkScan(query3, "struct<name:struct<first:string>," +
+      "employer:struct<company:struct<name:string>>>")
+    checkAnswer(query3, Row("Jane") :: Nil)
+
+    val query4 = sql("select name.first, employer.company.name from contacts " +
+      "where employer.company is not null and p = 1")
+    checkScan(query4, "struct<name:struct<first:string>," +
+      "employer:struct<company:struct<name:string>>>")
+    checkAnswer(query4, Row("Jane", "abc") :: Nil)
+  }
+
+  testSchemaPruning("select nullable complex field and having is not null predicate") {
+    val query = sql("select employer.company from contacts " +
+      "where employer is not null and p = 1")
+    checkScan(query, "struct<employer:struct<company:struct<name:string,address:string>>>")
+    checkAnswer(query, Row(Row("abc", "123 Business Street")) :: Row(null) :: Nil)
+  }
+
+  testSchemaPruning("select a single complex field and is null expression in project") {
+    val query = sql("select name.first, address is not null from contacts")
+    checkScan(query, "struct<name:struct<first:string>,address:string>")
+    checkAnswer(query.orderBy("id"),
+      Row("Jane", true) :: Row("John", true) :: Row("Janet", true) :: Row("Jim", true) :: Nil)
+  }
+
+  testSchemaPruning("select a single complex field array and in clause") {
+    val query = sql("select friends.middle from contacts where friends.first[0] = 'Susan'")
+    checkScan(query,
+      "struct<friends:array<struct<first:string,middle:string>>>")
+    checkAnswer(query.orderBy("id"),
+      Row(Array("Z.")) :: Nil)
+  }
+
+  testSchemaPruning("select a single complex field from a map entry and in clause") {
+    val query =
+      sql("select relatives[\"brother\"].middle from contacts " +
+        "where relatives[\"brother\"].first = 'John'")
+    checkScan(query,
+      "struct<relatives:map<string,struct<first:string,middle:string>>>")
+    checkAnswer(query.orderBy("id"),
+      Row("Y.") :: Nil)
+  }
+
+  testSchemaPruning("select one complex field and having is null predicate on another " +
+      "complex field") {
+    val query = sql("select * from contacts")
+      .where("name.middle is not null")
+      .select(
+        "id",
+        "name.first",
+        "name.middle",
+        "name.last"
+      )
+      .where("last = 'Jones'")
+      .select(count("id")).toDF()
+    checkScan(query,
+      "struct<id:int,name:struct<middle:string,last:string>>")
+    checkAnswer(query, Row(0) :: Nil)
+  }
+
+  testSchemaPruning("select one deep nested complex field and having is null predicate on " +
+      "another deep nested complex field") {
+    val query = sql("select * from contacts")
+      .where("employer.company.address is not null")
+      .selectExpr(
+        "id",
+        "name.first",
+        "name.middle",
+        "name.last",
+        "employer.id as employer_id"
+      )
+      .where("employer_id = 0")
+      .select(count("id")).toDF()
+    checkScan(query,
+      "struct<id:int,employer:struct<id:int,company:struct<address:string>>>")
+    checkAnswer(query, Row(1) :: Nil)
+  }
+
   private def testSchemaPruning(testName: String)(testThunk: => Unit) {
-    withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
-      test(s"Spark vectorized reader - without partition data column - $testName") {
+    test(s"Spark vectorized reader - without partition data column - $testName") {
+      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
         withContacts(testThunk)
       }
-      test(s"Spark vectorized reader - with partition data column - $testName") {
+    }
+    test(s"Spark vectorized reader - with partition data column - $testName") {
+      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true") {
         withContactsWithDataPartitionColumn(testThunk)
       }
     }
 
-    withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false") {
-      test(s"Parquet-mr reader - without partition data column - $testName") {
+    test(s"Parquet-mr reader - without partition data column - $testName") {
+      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false") {
         withContacts(testThunk)
       }
-      test(s"Parquet-mr reader - with partition data column - $testName") {
+    }
+    test(s"Parquet-mr reader - with partition data column - $testName") {
+      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false") {
         withContactsWithDataPartitionColumn(testThunk)
       }
     }
@@ -209,7 +311,7 @@ class ParquetSchemaPruningSuite
     MixedCase(1, "r1c1", MixedCaseColumn("123", 2)) ::
     Nil
 
-  testMixedCasePruning("select with exact column names") {
+  testExactCaseQueryPruning("select with exact column names") {
     val query = sql("select CoL1, coL2.B from mixedcase")
     checkScan(query, "struct<CoL1:string,coL2:struct<B:int>>")
     checkAnswer(query.orderBy("id"),
@@ -218,7 +320,7 @@ class ParquetSchemaPruningSuite
       Nil)
   }
 
-  testMixedCasePruning("select with lowercase column names") {
+  testMixedCaseQueryPruning("select with lowercase column names") {
     val query = sql("select col1, col2.b from mixedcase")
     checkScan(query, "struct<CoL1:string,coL2:struct<B:int>>")
     checkAnswer(query.orderBy("id"),
@@ -227,7 +329,7 @@ class ParquetSchemaPruningSuite
       Nil)
   }
 
-  testMixedCasePruning("select with different-case column names") {
+  testMixedCaseQueryPruning("select with different-case column names") {
     val query = sql("select cOL1, cOl2.b from mixedcase")
     checkScan(query, "struct<CoL1:string,coL2:struct<B:int>>")
     checkAnswer(query.orderBy("id"),
@@ -236,37 +338,43 @@ class ParquetSchemaPruningSuite
       Nil)
   }
 
-  testMixedCasePruning("filter with different-case column names") {
+  testMixedCaseQueryPruning("filter with different-case column names") {
     val query = sql("select id from mixedcase where Col2.b = 2")
-    // Pruning with filters is currently unsupported. As-is, the file reader will read the id column
-    // and the entire coL2 struct. Once pruning with filters has been implemented we can uncomment
-    // this line
-    // checkScan(query, "struct<id:int,coL2:struct<B:int>>")
+    checkScan(query, "struct<id:int,coL2:struct<B:int>>")
     checkAnswer(query.orderBy("id"), Row(1) :: Nil)
   }
 
-  private def testMixedCasePruning(testName: String)(testThunk: => Unit) {
-    withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
-      SQLConf.CASE_SENSITIVE.key -> "true") {
-      test(s"Spark vectorized reader - case-sensitive parser - mixed-case schema - $testName") {
-          withMixedCaseData(testThunk)
-      }
-    }
-    withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
-      SQLConf.CASE_SENSITIVE.key -> "false") {
-      test(s"Parquet-mr reader - case-insensitive parser - mixed-case schema - $testName") {
+  // Tests schema pruning for a query whose column and field names are exactly the same as the table
+  // schema's column and field names. N.B. this implies that `testThunk` should pass using either a
+  // case-sensitive or case-insensitive query parser
+  private def testExactCaseQueryPruning(testName: String)(testThunk: => Unit) {
+    test(s"Spark vectorized reader - case-sensitive parser - mixed-case schema - $testName") {
+      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+        SQLConf.CASE_SENSITIVE.key -> "true") {
         withMixedCaseData(testThunk)
       }
     }
-    withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
-      SQLConf.CASE_SENSITIVE.key -> "false") {
-      test(s"Spark vectorized reader - case-insensitive parser - mixed-case schema - $testName") {
-          withMixedCaseData(testThunk)
+    test(s"Parquet-mr reader - case-sensitive parser - mixed-case schema - $testName") {
+      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
+        SQLConf.CASE_SENSITIVE.key -> "true") {
+        withMixedCaseData(testThunk)
       }
     }
-    withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
-      SQLConf.CASE_SENSITIVE.key -> "true") {
-      test(s"Parquet-mr reader - case-sensitive parser - mixed-case schema - $testName") {
+    testMixedCaseQueryPruning(testName)(testThunk)
+  }
+
+  // Tests schema pruning for a query whose column and field names may differ in case from the table
+  // schema's column and field names
+  private def testMixedCaseQueryPruning(testName: String)(testThunk: => Unit) {
+    test(s"Spark vectorized reader - case-insensitive parser - mixed-case schema - $testName") {
+      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "true",
+        SQLConf.CASE_SENSITIVE.key -> "false") {
+        withMixedCaseData(testThunk)
+      }
+    }
+    test(s"Parquet-mr reader - case-insensitive parser - mixed-case schema - $testName") {
+      withSQLConf(SQLConf.PARQUET_VECTORIZED_READER_ENABLED.key -> "false",
+        SQLConf.CASE_SENSITIVE.key -> "false") {
         withMixedCaseData(testThunk)
       }
     }

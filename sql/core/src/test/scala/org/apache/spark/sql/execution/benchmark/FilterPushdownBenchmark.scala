@@ -53,7 +53,8 @@ class FilterPushdownBenchmark extends SparkFunSuite with BenchmarkBeforeAndAfter
   private val numRows = 1024 * 1024 * 15
   private val width = 5
   private val mid = numRows / 2
-  private val blockSize = 1048576
+  // For Parquet/ORC, we will use the same value for block size and compression size
+  private val blockSize = org.apache.parquet.hadoop.ParquetWriter.DEFAULT_PAGE_SIZE
 
   private val spark = SparkSession.builder().config(conf).getOrCreate()
 
@@ -130,16 +131,16 @@ class FilterPushdownBenchmark extends SparkFunSuite with BenchmarkBeforeAndAfter
     }
     val df = spark.range(numRows).selectExpr(selectExpr: _*).sort("value")
 
-    saveAsTable(df, dir)
+    saveAsTable(df, dir, true)
   }
 
-  private def saveAsTable(df: DataFrame, dir: File): Unit = {
+  private def saveAsTable(df: DataFrame, dir: File, useDictionary: Boolean = false): Unit = {
     val orcPath = dir.getCanonicalPath + "/orc"
     val parquetPath = dir.getCanonicalPath + "/parquet"
 
-    // To always turn on dictionary encoding, we set 1.0 at the threshold (the default is 0.8)
     df.write.mode("overwrite")
-      .option("orc.dictionary.key.threshold", 1.0)
+      .option("orc.dictionary.key.threshold", if (useDictionary) 1.0 else 0.8)
+      .option("orc.compress.size", blockSize)
       .option("orc.stripe.size", blockSize).orc(orcPath)
     spark.read.orc(orcPath).createOrReplaceTempView("orcTable")
 
@@ -242,7 +243,7 @@ class FilterPushdownBenchmark extends SparkFunSuite with BenchmarkBeforeAndAfter
 
   ignore("Pushdown for many distinct value case") {
     withTempPath { dir =>
-      withTempTable("orcTable", "patquetTable") {
+      withTempTable("orcTable", "parquetTable") {
         Seq(true, false).foreach { useStringForValue =>
           prepareTable(dir, numRows, width, useStringForValue)
           if (useStringForValue) {
@@ -259,7 +260,7 @@ class FilterPushdownBenchmark extends SparkFunSuite with BenchmarkBeforeAndAfter
     withTempPath { dir =>
       val numDistinctValues = 200
 
-      withTempTable("orcTable", "patquetTable") {
+      withTempTable("orcTable", "parquetTable") {
         prepareStringDictTable(dir, numRows, numDistinctValues, width)
         runStringBenchmark(numRows, width, numDistinctValues / 2, "distinct string")
       }
@@ -268,7 +269,7 @@ class FilterPushdownBenchmark extends SparkFunSuite with BenchmarkBeforeAndAfter
 
   ignore("Pushdown benchmark for StringStartsWith") {
     withTempPath { dir =>
-      withTempTable("orcTable", "patquetTable") {
+      withTempTable("orcTable", "parquetTable") {
         prepareTable(dir, numRows, width, true)
         Seq(
           "value like '10%'",
@@ -296,7 +297,7 @@ class FilterPushdownBenchmark extends SparkFunSuite with BenchmarkBeforeAndAfter
           monotonically_increasing_id()
         }
         val df = spark.range(numRows).selectExpr(columns: _*).withColumn("value", valueCol.cast(dt))
-        withTempTable("orcTable", "patquetTable") {
+        withTempTable("orcTable", "parquetTable") {
           saveAsTable(df, dir)
 
           Seq(s"value = $mid").foreach { whereExpr =>
@@ -320,7 +321,7 @@ class FilterPushdownBenchmark extends SparkFunSuite with BenchmarkBeforeAndAfter
 
   ignore("Pushdown benchmark for InSet -> InFilters") {
     withTempPath { dir =>
-      withTempTable("orcTable", "patquetTable") {
+      withTempTable("orcTable", "parquetTable") {
         prepareTable(dir, numRows, width, false)
         Seq(5, 10, 50, 100).foreach { count =>
           Seq(10, 50, 90).foreach { distribution =>
@@ -341,7 +342,7 @@ class FilterPushdownBenchmark extends SparkFunSuite with BenchmarkBeforeAndAfter
       val df = spark.range(numRows).selectExpr(columns: _*)
         .withColumn("value", (monotonically_increasing_id() % Byte.MaxValue).cast(ByteType))
         .orderBy("value")
-      withTempTable("orcTable", "patquetTable") {
+      withTempTable("orcTable", "parquetTable") {
         saveAsTable(df, dir)
 
         Seq(s"value = CAST(${Byte.MaxValue / 2} AS ${ByteType.simpleString})")
@@ -373,7 +374,7 @@ class FilterPushdownBenchmark extends SparkFunSuite with BenchmarkBeforeAndAfter
             val columns = (1 to width).map(i => s"CAST(id AS string) c$i")
             val df = spark.range(numRows).selectExpr(columns: _*)
               .withColumn("value", monotonically_increasing_id().cast(TimestampType))
-            withTempTable("orcTable", "patquetTable") {
+            withTempTable("orcTable", "parquetTable") {
               saveAsTable(df, dir)
 
               Seq(s"value = CAST($mid AS timestamp)").foreach { whereExpr =>
@@ -394,6 +395,24 @@ class FilterPushdownBenchmark extends SparkFunSuite with BenchmarkBeforeAndAfter
               }
             }
           }
+        }
+      }
+    }
+  }
+
+  ignore(s"Pushdown benchmark with many filters") {
+    val numRows = 1
+    val width = 500
+
+    withTempPath { dir =>
+      val columns = (1 to width).map(i => s"id c$i")
+      val df = spark.range(1).selectExpr(columns: _*)
+      withTempTable("orcTable", "parquetTable") {
+        saveAsTable(df, dir)
+        Seq(1, 250, 500).foreach { numFilter =>
+          val whereExpr = (1 to numFilter).map(i => s"c$i = 0").mkString(" and ")
+          // Note: InferFiltersFromConstraints will add more filters to this given filters
+          filterPushDownBenchmark(numRows, s"Select 1 row with $numFilter filters", whereExpr)
         }
       }
     }

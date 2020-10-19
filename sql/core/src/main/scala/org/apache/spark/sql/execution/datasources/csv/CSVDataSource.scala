@@ -210,7 +210,11 @@ object TextInputCSVDataSource extends CSVDataSource {
       // Note: if there are only comments in the first block, the header would probably
       // be not extracted.
       CSVUtils.extractHeader(lines, parser.options).foreach { header =>
-        val schema = if (columnPruning) requiredSchema else dataSchema
+        val actualRequiredSchema =
+          StructType(requiredSchema.filterNot(_.name == parser.options.columnNameOfCorruptRecord))
+        val actualDataSchema =
+          StructType(dataSchema.filterNot(_.name == parser.options.columnNameOfCorruptRecord))
+        val schema = if (columnPruning) actualRequiredSchema else actualDataSchema
         val columnNames = parser.tokenizer.parseLine(header)
         CSVDataSource.checkHeaderColumnNames(
           schema,
@@ -240,23 +244,25 @@ object TextInputCSVDataSource extends CSVDataSource {
       sparkSession: SparkSession,
       csv: Dataset[String],
       maybeFirstLine: Option[String],
-      parsedOptions: CSVOptions): StructType = maybeFirstLine match {
-    case Some(firstLine) =>
-      val firstRow = new CsvParser(parsedOptions.asParserSettings).parseLine(firstLine)
-      val caseSensitive = sparkSession.sessionState.conf.caseSensitiveAnalysis
-      val header = makeSafeHeader(firstRow, caseSensitive, parsedOptions)
-      val sampled: Dataset[String] = CSVUtils.sample(csv, parsedOptions)
-      val tokenRDD = sampled.rdd.mapPartitions { iter =>
-        val filteredLines = CSVUtils.filterCommentAndEmpty(iter, parsedOptions)
-        val linesWithoutHeader =
-          CSVUtils.filterHeaderLine(filteredLines, firstLine, parsedOptions)
-        val parser = new CsvParser(parsedOptions.asParserSettings)
-        linesWithoutHeader.map(parser.parseLine)
-      }
-      CSVInferSchema.infer(tokenRDD, header, parsedOptions)
-    case None =>
-      // If the first line could not be read, just return the empty schema.
-      StructType(Nil)
+      parsedOptions: CSVOptions): StructType = {
+    val csvParser = new CsvParser(parsedOptions.asParserSettings)
+    maybeFirstLine.map(csvParser.parseLine(_)) match {
+      case Some(firstRow) if firstRow != null =>
+        val caseSensitive = sparkSession.sessionState.conf.caseSensitiveAnalysis
+        val header = makeSafeHeader(firstRow, caseSensitive, parsedOptions)
+        val sampled: Dataset[String] = CSVUtils.sample(csv, parsedOptions)
+        val tokenRDD = sampled.rdd.mapPartitions { iter =>
+          val filteredLines = CSVUtils.filterCommentAndEmpty(iter, parsedOptions)
+          val linesWithoutHeader =
+            CSVUtils.filterHeaderLine(filteredLines, maybeFirstLine.get, parsedOptions)
+          val parser = new CsvParser(parsedOptions.asParserSettings)
+          linesWithoutHeader.map(parser.parseLine)
+        }
+        CSVInferSchema.infer(tokenRDD, header, parsedOptions)
+      case _ =>
+        // If the first line could not be read, just return the empty schema.
+        StructType(Nil)
+    }
   }
 
   private def createBaseDataset(
@@ -270,7 +276,7 @@ object TextInputCSVDataSource extends CSVDataSource {
           sparkSession,
           paths = paths,
           className = classOf[TextFileFormat].getName,
-          options = options.parameters
+          options = options.parameters ++ Map(DataSource.GLOB_PATHS_KEY -> "false")
         ).resolveRelation(checkFilesExist = false))
         .select("value").as[String](Encoders.STRING)
     } else {
@@ -295,7 +301,11 @@ object MultiLineCSVDataSource extends CSVDataSource {
       caseSensitive: Boolean,
       columnPruning: Boolean): Iterator[InternalRow] = {
     def checkHeader(header: Array[String]): Unit = {
-      val schema = if (columnPruning) requiredSchema else dataSchema
+      val actualRequiredSchema =
+        StructType(requiredSchema.filterNot(_.name == parser.options.columnNameOfCorruptRecord))
+      val actualDataSchema =
+        StructType(dataSchema.filterNot(_.name == parser.options.columnNameOfCorruptRecord))
+      val schema = if (columnPruning) actualRequiredSchema else actualDataSchema
       CSVDataSource.checkHeaderColumnNames(
         schema,
         header,

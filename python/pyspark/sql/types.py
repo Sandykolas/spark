@@ -752,7 +752,7 @@ _all_complex_types = dict((v.typeName(), v)
                           for v in [ArrayType, MapType, StructType])
 
 
-_FIXED_DECIMAL = re.compile("decimal\\(\\s*(\\d+)\\s*,\\s*(\\d+)\\s*\\)")
+_FIXED_DECIMAL = re.compile(r"decimal\(\s*(\d+)\s*,\s*(\d+)\s*\)")
 
 
 def _parse_datatype_string(s):
@@ -1466,6 +1466,12 @@ class Row(tuple):
 
         :param recursive: turns the nested Row as dict (default: False).
 
+        .. note:: If a row contains duplicate field names, e.g., the rows of a join
+            between two :class:`DataFrame` that both have the fields of same names,
+            one of the duplicate fields will be selected by ``asDict``. ``__getitem__``
+            will also return one of the duplicate fields, however returned value might
+            be different to ``asDict``.
+
         >>> Row(name="Alice", age=11).asDict() == {'name': 'Alice', 'age': 11}
         True
         >>> row = Row(key=1, value=Row(name='a', age=2))
@@ -1500,6 +1506,9 @@ class Row(tuple):
     # let object acts like class
     def __call__(self, *args):
         """create new Row object"""
+        if len(args) > len(self):
+            raise ValueError("Can not create Row with fields %s, expected %d values "
+                             "but got %s" % (self, len(self), args))
         return _create_row(self, args)
 
     def __getitem__(self, item):

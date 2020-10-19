@@ -255,10 +255,15 @@ class GBTRegressionModel private[ml](
     // TODO: When we add a generic Boosting class, handle transform there?  SPARK-7129
     // Classifies by thresholding sum of weighted tree predictions
     val treePredictions = _trees.map(_.rootNode.predictImpl(features).prediction)
-    blas.ddot(numTrees, treePredictions, 1, _treeWeights, 1)
+    blas.ddot(getNumTrees, treePredictions, 1, _treeWeights, 1)
   }
 
-  /** Number of trees in ensemble */
+  /**
+   * Number of trees in ensemble
+   *
+   * @deprecated  Use [[getNumTrees]] instead. This method will be removed in 3.0.0.
+   */
+  @deprecated("Use getNumTrees instead. This method will be removed in 3.0.0.", "2.4.5")
   val numTrees: Int = trees.length
 
   @Since("1.4.0")
@@ -269,7 +274,7 @@ class GBTRegressionModel private[ml](
 
   @Since("1.4.0")
   override def toString: String = {
-    s"GBTRegressionModel (uid=$uid) with $numTrees trees"
+    s"GBTRegressionModel (uid=$uid) with $getNumTrees trees"
   }
 
   /**
@@ -338,15 +343,15 @@ object GBTRegressionModel extends MLReadable[GBTRegressionModel] {
     override def load(path: String): GBTRegressionModel = {
       implicit val format = DefaultFormats
       val (metadata: Metadata, treesData: Array[(Metadata, Node)], treeWeights: Array[Double]) =
-        EnsembleModelReadWrite.loadImpl(path, sparkSession, className, treeClassName, false)
+        EnsembleModelReadWrite.loadImpl(path, sparkSession, className, treeClassName)
 
       val numFeatures = (metadata.metadata \ "numFeatures").extract[Int]
       val numTrees = (metadata.metadata \ "numTrees").extract[Int]
 
       val trees: Array[DecisionTreeRegressionModel] = treesData.map {
         case (treeMetadata, root) =>
-          val tree = new DecisionTreeRegressionModel(treeMetadata.uid,
-            root.asInstanceOf[RegressionNode], numFeatures)
+          val tree =
+            new DecisionTreeRegressionModel(treeMetadata.uid, root, numFeatures)
           treeMetadata.getAndSetParams(tree)
           tree
       }

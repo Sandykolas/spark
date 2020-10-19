@@ -276,9 +276,9 @@ class StreamingQueryManager(object):
 
 class DataStreamReader(OptionUtils):
     """
-    Interface used to load a streaming :class:`DataFrame` from external storage systems
-    (e.g. file systems, key-value stores, etc). Use :func:`spark.readStream`
-    to access this.
+    Interface used to load a streaming :class:`DataFrame <pyspark.sql.DataFrame>` from external
+    storage systems (e.g. file systems, key-value stores, etc).
+    Use :attr:`SparkSession.readStream <pyspark.sql.SparkSession.readStream>` to access this.
 
     .. note:: Evolving.
 
@@ -564,8 +564,8 @@ class DataStreamReader(OptionUtils):
             negativeInf=None, dateFormat=None, timestampFormat=None, maxColumns=None,
             maxCharsPerColumn=None, maxMalformedLogPerPartition=None, mode=None,
             columnNameOfCorruptRecord=None, multiLine=None, charToEscapeQuoteEscaping=None,
-            enforceSchema=None):
-        """Loads a CSV file stream and returns the result as a  :class:`DataFrame`.
+            enforceSchema=None, emptyValue=None):
+        r"""Loads a CSV file stream and returns the result as a :class:`DataFrame`.
 
         This function will go through the input once to determine the input schema if
         ``inferSchema`` is enabled. To avoid going through the entire data once, disable
@@ -658,6 +658,8 @@ class DataStreamReader(OptionUtils):
                                           the quote character. If None is set, the default value is
                                           escape character when escape and quote characters are
                                           different, ``\0`` otherwise..
+        :param emptyValue: sets the string representation of an empty value. If None is set, it uses
+                           the default value, empty string.
 
         >>> csv_sdf = spark.readStream.csv(tempfile.mkdtemp(), schema = sdf_schema)
         >>> csv_sdf.isStreaming
@@ -674,7 +676,8 @@ class DataStreamReader(OptionUtils):
             maxCharsPerColumn=maxCharsPerColumn,
             maxMalformedLogPerPartition=maxMalformedLogPerPartition, mode=mode,
             columnNameOfCorruptRecord=columnNameOfCorruptRecord, multiLine=multiLine,
-            charToEscapeQuoteEscaping=charToEscapeQuoteEscaping, enforceSchema=enforceSchema)
+            charToEscapeQuoteEscaping=charToEscapeQuoteEscaping, enforceSchema=enforceSchema,
+            emptyValue=emptyValue)
         if isinstance(path, basestring):
             return self._df(self._jreader.csv(path))
         else:
@@ -683,8 +686,9 @@ class DataStreamReader(OptionUtils):
 
 class DataStreamWriter(object):
     """
-    Interface used to write a streaming :class:`DataFrame` to external storage systems
-    (e.g. file systems, key-value stores, etc). Use :func:`DataFrame.writeStream`
+    Interface used to write a streaming :class:`DataFrame <pyspark.sql.DataFrame>` to external
+    storage systems (e.g. file systems, key-value stores, etc).
+    Use :attr:`DataFrame.writeStream <pyspark.sql.DataFrame.writeStream>`
     to access this.
 
     .. note:: Evolving.
@@ -809,10 +813,13 @@ class DataStreamWriter(object):
         .. note:: Evolving.
 
         :param processingTime: a processing time interval as a string, e.g. '5 seconds', '1 minute'.
-                               Set a trigger that runs a query periodically based on the processing
-                               time. Only one trigger can be set.
+                               Set a trigger that runs a microbatch query periodically based on the
+                               processing time. Only one trigger can be set.
         :param once: if set to True, set a trigger that processes only one batch of data in a
                      streaming query then terminates the query. Only one trigger can be set.
+        :param continuous: a time interval as a string, e.g. '5 seconds', '1 minute'.
+                           Set a trigger that runs a continuous query with a given checkpoint
+                           interval. Only one trigger can be set.
 
         >>> # trigger the query for execution every 5 seconds
         >>> writer = sdf.writeStream.trigger(processingTime='5 seconds')
@@ -1032,7 +1039,7 @@ class DataStreamWriter(object):
         >>> def func(batch_df, batch_id):
         ...     batch_df.collect()
         ...
-        >>> writer = sdf.writeStream.foreach(func)
+        >>> writer = sdf.writeStream.foreachBatch(func)
         """
 
         from pyspark.java_gateway import ensure_callback_server_started

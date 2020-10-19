@@ -26,10 +26,12 @@ import org.apache.spark.sql.catalyst.TableIdentifier
 import org.apache.spark.sql.catalyst.analysis.{EliminateSubqueryAliases, UnresolvedRelation}
 import org.apache.spark.sql.catalyst.catalog._
 import org.apache.spark.sql.catalyst.plans.logical.{AppendData, InsertIntoTable, LogicalPlan}
+import org.apache.spark.sql.catalyst.util.CaseInsensitiveMap
 import org.apache.spark.sql.execution.SQLExecution
 import org.apache.spark.sql.execution.command.DDLUtils
-import org.apache.spark.sql.execution.datasources.{CreateTable, DataSource, LogicalRelation}
+import org.apache.spark.sql.execution.datasources.{CreateTable, DataSource, DataSourceUtils, LogicalRelation}
 import org.apache.spark.sql.execution.datasources.v2.{DataSourceV2Relation, DataSourceV2Utils, WriteToDataSourceV2}
+import org.apache.spark.sql.internal.SQLConf
 import org.apache.spark.sql.sources.BaseRelation
 import org.apache.spark.sql.sources.v2._
 import org.apache.spark.sql.types.StructType
@@ -47,10 +49,12 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
 
   /**
    * Specifies the behavior when data or table already exists. Options include:
-   *   - `SaveMode.Overwrite`: overwrite the existing data.
-   *   - `SaveMode.Append`: append the data.
-   *   - `SaveMode.Ignore`: ignore the operation (i.e. no-op).
-   *   - `SaveMode.ErrorIfExists`: default option, throw an exception at runtime.
+   * <ul>
+   * <li>`SaveMode.Overwrite`: overwrite the existing data.</li>
+   * <li>`SaveMode.Append`: append the data.</li>
+   * <li>`SaveMode.Ignore`: ignore the operation (i.e. no-op).</li>
+   * <li>`SaveMode.ErrorIfExists`: default option, throw an exception at runtime.</li>
+   * </ul>
    *
    * @since 1.4.0
    */
@@ -61,10 +65,12 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
 
   /**
    * Specifies the behavior when data or table already exists. Options include:
-   *   - `overwrite`: overwrite the existing data.
-   *   - `append`: append the data.
-   *   - `ignore`: ignore the operation (i.e. no-op).
-   *   - `error` or `errorifexists`: default option, throw an exception at runtime.
+   * <ul>
+   * <li>`overwrite`: overwrite the existing data.</li>
+   * <li>`append`: append the data.</li>
+   * <li>`ignore`: ignore the operation (i.e. no-op).</li>
+   * <li>`error` or `errorifexists`: default option, throw an exception at runtime.</li>
+   * </ul>
    *
    * @since 1.4.0
    */
@@ -93,6 +99,9 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
   /**
    * Adds an output option for the underlying data source.
    *
+   * All options are maintained in a case-insensitive way in terms of key names.
+   * If a new option has the same key case-insensitively, it will override the existing option.
+   *
    * You can set the following option(s):
    * <ul>
    * <li>`timeZone` (default session local timezone): sets the string that indicates a timezone
@@ -109,12 +118,18 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
   /**
    * Adds an output option for the underlying data source.
    *
+   * All options are maintained in a case-insensitive way in terms of key names.
+   * If a new option has the same key case-insensitively, it will override the existing option.
+   *
    * @since 2.0.0
    */
   def option(key: String, value: Boolean): DataFrameWriter[T] = option(key, value.toString)
 
   /**
    * Adds an output option for the underlying data source.
+   *
+   * All options are maintained in a case-insensitive way in terms of key names.
+   * If a new option has the same key case-insensitively, it will override the existing option.
    *
    * @since 2.0.0
    */
@@ -123,12 +138,18 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
   /**
    * Adds an output option for the underlying data source.
    *
+   * All options are maintained in a case-insensitive way in terms of key names.
+   * If a new option has the same key case-insensitively, it will override the existing option.
+   *
    * @since 2.0.0
    */
   def option(key: String, value: Double): DataFrameWriter[T] = option(key, value.toString)
 
   /**
    * (Scala-specific) Adds output options for the underlying data source.
+   *
+   * All options are maintained in a case-insensitive way in terms of key names.
+   * If a new option has the same key case-insensitively, it will override the existing option.
    *
    * You can set the following option(s):
    * <ul>
@@ -145,6 +166,9 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
 
   /**
    * Adds output options for the underlying data source.
+   *
+   * All options are maintained in a case-insensitive way in terms of key names.
+   * If a new option has the same key case-insensitively, it will override the existing option.
    *
    * You can set the following option(s):
    * <ul>
@@ -163,9 +187,10 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
    * Partitions the output by the given columns on the file system. If specified, the output is
    * laid out on the file system similar to Hive's partitioning scheme. As an example, when we
    * partition a dataset by year and then month, the directory layout would look like:
-   *
-   *   - year=2016/month=01/
-   *   - year=2016/month=02/
+   * <ul>
+   * <li>year=2016/month=01/</li>
+   * <li>year=2016/month=02/</li>
+   * </ul>
    *
    * Partitioning is one of the most widely used techniques to optimize physical data layout.
    * It provides a coarse-grained index for skipping unnecessary data reads when queries have
@@ -185,7 +210,8 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
 
   /**
    * Buckets the output by the given columns. If specified, the output is laid out on the file
-   * system similar to Hive's bucketing scheme.
+   * system similar to Hive's bucketing scheme, but with a different bucket hash function
+   * and is not compatible with Hive's bucketing.
    *
    * This is applicable for all file-based data sources (e.g. Parquet, JSON) starting with Spark
    * 2.1.0.
@@ -240,27 +266,19 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
     if (classOf[DataSourceV2].isAssignableFrom(cls)) {
       val source = cls.newInstance().asInstanceOf[DataSourceV2]
       source match {
-        case provider: BatchWriteSupportProvider =>
-          val options = extraOptions ++
-              DataSourceV2Utils.extractSessionConfigs(source, df.sparkSession.sessionState.conf)
+        case ws: WriteSupport =>
+          val sessionOptions = DataSourceV2Utils.extractSessionConfigs(
+            source,
+            df.sparkSession.sessionState.conf)
+          val options = sessionOptions.filterKeys(!extraOptions.contains(_)) ++ extraOptions.toMap
 
-          val relation = DataSourceV2Relation.create(source, options.toMap)
-          if (mode == SaveMode.Append) {
+          val writer = ws.createWriter(
+            UUID.randomUUID.toString, df.logicalPlan.output.toStructType, mode,
+            new DataSourceOptions(options.asJava))
+
+          if (writer.isPresent) {
             runCommand(df.sparkSession, "save") {
-              AppendData.byName(relation, df.logicalPlan)
-            }
-
-          } else {
-            val writer = provider.createBatchWriteSupport(
-              UUID.randomUUID().toString,
-              df.logicalPlan.output.toStructType,
-              mode,
-              new DataSourceOptions(options.asJava))
-
-            if (writer.isPresent) {
-              runCommand(df.sparkSession, "save") {
-                WriteToDataSourceV2(writer.get, df.logicalPlan)
-              }
+              WriteToDataSourceV2(writer.get, df.logicalPlan)
             }
           }
 
@@ -275,6 +293,14 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
   }
 
   private def saveToV1Source(): Unit = {
+    if (SparkSession.active.sessionState.conf.getConf(
+      SQLConf.LEGACY_PASS_PARTITION_BY_AS_OPTIONS)) {
+      partitioningColumns.foreach { columns =>
+        extraOptions += (DataSourceUtils.PARTITIONING_COLUMNS_KEY ->
+          DataSourceUtils.encodePartitioningColumns(columns))
+      }
+    }
+
     // Code path for data source v1.
     runCommand(df.sparkSession, "save") {
       DataSource(
@@ -505,7 +531,7 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
     // connectionProperties should override settings in extraOptions.
     this.extraOptions ++= connectionProperties.asScala
     // explicit url and dbtable should override all
-    this.extraOptions += ("url" -> url, "dbtable" -> table)
+    this.extraOptions ++= Seq("url" -> url, "dbtable" -> table)
     format("jdbc").save()
   }
 
@@ -577,7 +603,6 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
    * </ul>
    *
    * @since 1.5.0
-   * @note Currently, this method can only be used after enabling Hive support
    */
   def orc(path: String): Unit = {
     format("orc").save(path)
@@ -635,6 +660,7 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
    * enclosed in quotes. Default is to only escape values containing a quote character.</li>
    * <li>`header` (default `false`): writes the names of columns as the first line.</li>
    * <li>`nullValue` (default empty string): sets the string representation of a null value.</li>
+   * <li>`emptyValue` (default `""`): sets the string representation of an empty value.</li>
    * <li>`encoding` (by default it is not set): specifies encoding (charset) of saved csv
    * files. If it is not set, the UTF-8 charset will be used.</li>
    * <li>`compression` (default `null`): compression codec to use when saving to file. This can be
@@ -671,7 +697,7 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
       val end = System.nanoTime()
       session.listenerManager.onSuccess(name, qe, end - start)
     } catch {
-      case e: Exception =>
+      case e: Throwable =>
         session.listenerManager.onFailure(name, qe, e)
         throw e
     }
@@ -685,7 +711,7 @@ final class DataFrameWriter[T] private[sql](ds: Dataset[T]) {
 
   private var mode: SaveMode = SaveMode.ErrorIfExists
 
-  private val extraOptions = new scala.collection.mutable.HashMap[String, String]
+  private var extraOptions = CaseInsensitiveMap[String](Map.empty)
 
   private var partitioningColumns: Option[Seq[String]] = None
 

@@ -208,7 +208,7 @@ NULL
 #' # Dataframe used throughout this doc
 #' df <- createDataFrame(cbind(model = rownames(mtcars), mtcars))
 #' tmp <- mutate(df, v1 = create_array(df$mpg, df$cyl, df$hp))
-#' head(select(tmp, array_contains(tmp$v1, 21), size(tmp$v1)))
+#' head(select(tmp, array_contains(tmp$v1, 21), size(tmp$v1), shuffle(tmp$v1)))
 #' head(select(tmp, array_max(tmp$v1), array_min(tmp$v1), array_distinct(tmp$v1)))
 #' head(select(tmp, array_position(tmp$v1, 21), array_repeat(df$mpg, 3), array_sort(tmp$v1)))
 #' head(select(tmp, flatten(tmp$v1), reverse(tmp$v1), array_remove(tmp$v1, 21)))
@@ -219,10 +219,12 @@ NULL
 #' head(select(tmp, sort_array(tmp$v1)))
 #' head(select(tmp, sort_array(tmp$v1, asc = FALSE)))
 #' tmp3 <- mutate(df, v3 = create_map(df$model, df$cyl))
-#' head(select(tmp3, map_entries(tmp3$v3), map_keys(tmp3$v3), map_values(tmp3$v3)))
+#' head(select(tmp3, map_keys(tmp3$v3), map_values(tmp3$v3)))
 #' head(select(tmp3, element_at(tmp3$v3, "Valiant")))
 #' tmp4 <- mutate(df, v4 = create_array(df$mpg, df$cyl), v5 = create_array(df$cyl, df$hp))
 #' head(select(tmp4, concat(tmp4$v4, tmp4$v5), arrays_overlap(tmp4$v4, tmp4$v5)))
+#' head(select(tmp4, array_except(tmp4$v4, tmp4$v5), array_intersect(tmp4$v4, tmp4$v5)))
+#' head(select(tmp4, array_union(tmp4$v4, tmp4$v5)))
 #' head(select(tmp4, arrays_zip(tmp4$v4, tmp4$v5), map_from_arrays(tmp4$v4, tmp4$v5)))
 #' head(select(tmp, concat(df$mpg, df$cyl, df$hp)))
 #' tmp5 <- mutate(df, v6 = create_array(df$model, df$model))
@@ -1697,8 +1699,8 @@ setMethod("to_date",
           })
 
 #' @details
-#' \code{to_json}: Converts a column containing a \code{structType}, array of \code{structType},
-#' a \code{mapType} or array of \code{mapType} into a Column of JSON string.
+#' \code{to_json}: Converts a column containing a \code{structType}, a \code{mapType}
+#' or an \code{arrayType} into a Column of JSON string.
 #' Resolving the Column can fail if an unsupported type is encountered.
 #'
 #' @rdname column_collection_functions
@@ -2201,9 +2203,16 @@ setMethod("from_json", signature(x = "Column", schema = "characterOrstructType")
           })
 
 #' @details
-#' \code{from_utc_timestamp}: Given a timestamp like '2017-07-14 02:40:00.0', interprets it as a
-#' time in UTC, and renders that time as a timestamp in the given time zone. For example, 'GMT+1'
-#' would yield '2017-07-14 03:40:00.0'.
+#' \code{from_utc_timestamp}: This is a common function for databases supporting TIMESTAMP WITHOUT
+#' TIMEZONE. This function takes a timestamp which is timezone-agnostic, and interprets it as a
+#' timestamp in UTC, and renders that timestamp as a timestamp in the given time zone.
+#' However, timestamp in Spark represents number of microseconds from the Unix epoch, which is not
+#' timezone-agnostic. So in Spark this function just shift the timestamp value from UTC timezone to
+#' the given timezone.
+#' This function may return confusing result if the input is a string with timezone, e.g.
+#' (\code{2018-03-13T06:18:23+00:00}). The reason is that, Spark firstly cast the string to
+#' timestamp according to the timezone in the string, and finally display the result by converting
+#' the timestamp to string according to the session local timezone.
 #'
 #' @rdname column_datetime_diff_functions
 #'
@@ -2259,9 +2268,16 @@ setMethod("next_day", signature(y = "Column", x = "character"),
           })
 
 #' @details
-#' \code{to_utc_timestamp}: Given a timestamp like '2017-07-14 02:40:00.0', interprets it as a
-#' time in the given time zone, and renders that time as a timestamp in UTC. For example, 'GMT+1'
-#' would yield '2017-07-14 01:40:00.0'.
+#' \code{to_utc_timestamp}: This is a common function for databases supporting TIMESTAMP WITHOUT
+#' TIMEZONE. This function takes a timestamp which is timezone-agnostic, and interprets it as a
+#' timestamp in the given timezone, and renders that timestamp as a timestamp in UTC.
+#' However, timestamp in Spark represents number of microseconds from the Unix epoch, which is not
+#' timezone-agnostic. So in Spark this function just shift the timestamp value from the given
+#' timezone to UTC timezone.
+#' This function may return confusing result if the input is a string with timezone, e.g.
+#' (\code{2018-03-13T06:18:23+00:00}). The reason is that, Spark firstly cast the string to
+#' timestamp according to the timezone in the string, and finally display the result by converting
+#' the timestamp to string according to the session local timezone.
 #'
 #' @rdname column_datetime_diff_functions
 #' @aliases to_utc_timestamp to_utc_timestamp,Column,character-method
@@ -2598,7 +2614,7 @@ setMethod("lpad", signature(x = "Column", len = "numeric", pad = "character"),
 
 #' @details
 #' \code{rand}: Generates a random column with independent and identically distributed (i.i.d.)
-#' samples from U[0.0, 1.0].
+#' samples uniformly distributed in [0.0, 1.0).
 #' Note: the function is non-deterministic in general case.
 #'
 #' @rdname column_nonaggregate_functions
@@ -3025,6 +3041,34 @@ setMethod("array_distinct",
           })
 
 #' @details
+#' \code{array_except}: Returns an array of the elements in the first array but not in the second
+#'  array, without duplicates. The order of elements in the result is not determined.
+#'
+#' @rdname column_collection_functions
+#' @aliases array_except array_except,Column-method
+#' @note array_except since 2.4.0
+setMethod("array_except",
+          signature(x = "Column", y = "Column"),
+          function(x, y) {
+            jc <- callJStatic("org.apache.spark.sql.functions", "array_except", x@jc, y@jc)
+            column(jc)
+          })
+
+#' @details
+#' \code{array_intersect}: Returns an array of the elements in the intersection of the given two
+#'  arrays, without duplicates.
+#'
+#' @rdname column_collection_functions
+#' @aliases array_intersect array_intersect,Column-method
+#' @note array_intersect since 2.4.0
+setMethod("array_intersect",
+          signature(x = "Column", y = "Column"),
+          function(x, y) {
+            jc <- callJStatic("org.apache.spark.sql.functions", "array_intersect", x@jc, y@jc)
+            column(jc)
+          })
+
+#' @details
 #' \code{array_join}: Concatenates the elements of column using the delimiter.
 #' Null values are replaced with nullReplacement if set, otherwise they are ignored.
 #'
@@ -3150,6 +3194,20 @@ setMethod("arrays_overlap",
           })
 
 #' @details
+#' \code{array_union}: Returns an array of the elements in the union of the given two arrays,
+#'  without duplicates.
+#'
+#' @rdname column_collection_functions
+#' @aliases array_union array_union,Column-method
+#' @note array_union since 2.4.0
+setMethod("array_union",
+          signature(x = "Column", y = "Column"),
+          function(x, y) {
+            jc <- callJStatic("org.apache.spark.sql.functions", "array_union", x@jc, y@jc)
+            column(jc)
+          })
+
+#' @details
 #' \code{arrays_zip}: Returns a merged array of structs in which the N-th struct contains all N-th
 #' values of input arrays.
 #'
@@ -3168,6 +3226,19 @@ setMethod("arrays_zip",
           })
 
 #' @details
+#' \code{shuffle}: Returns a random permutation of the given array.
+#'
+#' @rdname column_collection_functions
+#' @aliases shuffle shuffle,Column-method
+#' @note shuffle since 2.4.0
+setMethod("shuffle",
+          signature(x = "Column"),
+          function(x) {
+            jc <- callJStatic("org.apache.spark.sql.functions", "shuffle", x@jc)
+            column(jc)
+          })
+
+#' @details
 #' \code{flatten}: Creates a single array from an array of arrays.
 #' If a structure of nested arrays is deeper than two levels, only one level of nesting is removed.
 #'
@@ -3180,19 +3251,6 @@ setMethod("flatten",
             jc <- callJStatic("org.apache.spark.sql.functions", "flatten", x@jc)
             column(jc)
           })
-
-#' @details
-#' \code{map_entries}: Returns an unordered array of all entries in the given map.
-#'
-#' @rdname column_collection_functions
-#' @aliases map_entries map_entries,Column-method
-#' @note map_entries since 2.4.0
-setMethod("map_entries",
-          signature(x = "Column"),
-          function(x) {
-            jc <- callJStatic("org.apache.spark.sql.functions", "map_entries", x@jc)
-            column(jc)
-         })
 
 #' @details
 #' \code{map_from_arrays}: Creates a new map column. The array in the first column is used for
@@ -3279,11 +3337,11 @@ setMethod("size",
 
 #' @details
 #' \code{slice}: Returns an array containing all the elements in x from the index start
-#' (or starting from the end if start is negative) with the specified length.
+#' (array indices start at 1, or from the end if start is negative) with the specified length.
 #'
 #' @rdname column_collection_functions
-#' @param start an index indicating the first element occurring in the result.
-#' @param length a number of consecutive elements chosen to the result.
+#' @param start the starting index
+#' @param length the length of the slice
 #' @aliases slice slice,Column-method
 #' @note slice since 2.4.0
 setMethod("slice",

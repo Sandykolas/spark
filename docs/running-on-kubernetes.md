@@ -12,6 +12,23 @@ Kubernetes scheduler that has been added to Spark.
 In future versions, there may be behavioral changes around configuration,
 container images and entrypoints.**
 
+# Security
+
+Security in Spark is OFF by default. This could mean you are vulnerable to attack by default.
+Please see [Spark Security](security.html) and the specific advice below before running Spark.
+
+## User Identity
+
+Images built from the project provided Dockerfiles do not contain any [`USER`](https://docs.docker.com/engine/reference/builder/#user) directives.  This means that the resulting images will be running the Spark processes as `root` inside the container.  On unsecured clusters this may provide an attack vector for privilege escalation and container breakout.  Therefore security conscious deployments should consider providing custom images with `USER` directives specifying an unprivileged UID and GID.
+
+Alternatively the [Pod Template](#pod-template) feature can be used to add a [Security Context](https://kubernetes.io/docs/tasks/configure-pod-container/security-context/#volumes-and-file-systems) with a `runAsUser` to the pods that Spark submits.  Please bear in mind that this requires cooperation from your users and as such may not be a suitable solution for shared environments.  Cluster administrators should use [Pod Security Policies](https://kubernetes.io/docs/concepts/policy/pod-security-policy/#users-and-groups) if they wish to limit the users that pods may run as.
+
+## Volume Mounts
+
+As described later in this document under [Using Kubernetes Volumes](#using-kubernetes-volumes) Spark on K8S provides configuration options that allow for mounting certain volume types into the driver and executor pods.  In particular it allows for [`hostPath`](https://kubernetes.io/docs/concepts/storage/volumes/#hostpath) volumes which as described in the Kubernetes documentation have known security vulnerabilities.
+
+Cluster administrators should use [Pod Security Policies](https://kubernetes.io/docs/concepts/policy/pod-security-policy/) to limit the ability to mount `hostPath` volumes appropriately for their environments.
+
 # Prerequisites
 
 * A runnable distribution of Spark 2.3 or above.
@@ -86,7 +103,7 @@ $ bin/spark-submit \
 ```
 
 The Spark master, specified either via passing the `--master` command line argument to `spark-submit` or by setting
-`spark.master` in the application's configuration, must be a URL with the format `k8s://<api_server_url>`. Prefixing the
+`spark.master` in the application's configuration, must be a URL with the format `k8s://<api_server_host>:<k8s-apiserver-port>`. The port must always be specified, even if it's the HTTPS port 443. Prefixing the
 master string with `k8s://` will cause the Spark application to launch on the Kubernetes cluster, with the API server
 being contacted at `api_server_url`. If no HTTP protocol is specified in the URL, it defaults to `https`. For example,
 setting the master to `k8s://example.com:443` is equivalent to setting it to `k8s://https://example.com:443`, but to
@@ -136,7 +153,7 @@ hostname via `spark.driver.host` and your spark driver's port to `spark.driver.p
 
 ### Client Mode Executor Pod Garbage Collection
 
-If you run your Spark driver in a pod, it is highly recommended to set `spark.driver.pod.name` to the name of that pod.
+If you run your Spark driver in a pod, it is highly recommended to set `spark.kubernetes.driver.pod.name` to the name of that pod.
 When this property is set, the Spark scheduler will deploy the executor pods with an
 [OwnerReference](https://kubernetes.io/docs/concepts/workloads/controllers/garbage-collection/), which in turn will
 ensure that once the driver pod is deleted from the cluster, all of the application's executor pods will also be deleted.
@@ -145,7 +162,7 @@ an OwnerReference pointing to that pod will be added to each executor pod's Owne
 setting the OwnerReference to a pod that is not actually that driver pod, or else the executors may be terminated
 prematurely when the wrong pod is deleted.
 
-If your application is not running inside a pod, or if `spark.driver.pod.name` is not set when your application is
+If your application is not running inside a pod, or if `spark.kubernetes.driver.pod.name` is not set when your application is
 actually running in a pod, keep in mind that the executor pods may not be properly deleted from the cluster when the
 application exits. The Spark scheduler attempts to delete these pods, but if the network request to the API server fails
 for any reason, these pods will remain in the cluster. The executor processes should exit when they cannot reach the
@@ -184,6 +201,38 @@ To use a secret through an environment variable use the following options to the
 --conf spark.kubernetes.driver.secretKeyRef.ENV_NAME=name:key
 --conf spark.kubernetes.executor.secretKeyRef.ENV_NAME=name:key
 ```
+
+## Using Kubernetes Volumes
+
+Starting with Spark 2.4.0, users can mount the following types of Kubernetes [volumes](https://kubernetes.io/docs/concepts/storage/volumes/) into the driver and executor pods:
+* [hostPath](https://kubernetes.io/docs/concepts/storage/volumes/#hostpath): mounts a file or directory from the host node’s filesystem into a pod.
+* [emptyDir](https://kubernetes.io/docs/concepts/storage/volumes/#emptydir): an initially empty volume created when a pod is assigned to a node.
+* [persistentVolumeClaim](https://kubernetes.io/docs/concepts/storage/volumes/#persistentvolumeclaim): used to mount a `PersistentVolume` into a pod.
+
+**NB:** Please see the [Security](#security) section of this document for security issues related to volume mounts.
+
+To mount a volume of any of the types above into the driver pod, use the following configuration property:
+
+```
+--conf spark.kubernetes.driver.volumes.[VolumeType].[VolumeName].mount.path=<mount path>
+--conf spark.kubernetes.driver.volumes.[VolumeType].[VolumeName].mount.readOnly=<true|false>
+``` 
+
+Specifically, `VolumeType` can be one of the following values: `hostPath`, `emptyDir`, and `persistentVolumeClaim`. `VolumeName` is the name you want to use for the volume under the `volumes` field in the pod specification.
+
+Each supported type of volumes may have some specific configuration options, which can be specified using configuration properties of the following form:
+
+```
+spark.kubernetes.driver.volumes.[VolumeType].[VolumeName].options.[OptionName]=<value>
+``` 
+
+For example, the claim name of a `persistentVolumeClaim` with volume name `checkpointpvc` can be specified using the following property:
+
+```
+spark.kubernetes.driver.volumes.persistentVolumeClaim.checkpointpvc.options.claimName=check-point-pvc-claim
+```
+
+The configuration properties for mounting volumes into the executor pods use prefix `spark.kubernetes.executor.` instead of `spark.kubernetes.driver.`. For a complete list of available options for each supported type of volumes, please refer to the [Spark Properties](#spark-properties) section below. 
 
 ## Introspection and Debugging
 
@@ -299,20 +348,14 @@ RBAC authorization and how to configure Kubernetes service accounts for pods, pl
 
 ## Future Work
 
-There are several Spark on Kubernetes features that are currently being incubated in a fork -
-[apache-spark-on-k8s/spark](https://github.com/apache-spark-on-k8s/spark), which are expected to eventually make it into
-future versions of the spark-kubernetes integration.
+There are several Spark on Kubernetes features that are currently being worked on or planned to be worked on. Those features are expected to eventually make it into future versions of the spark-kubernetes integration.
 
 Some of these include:
 
-* R
-* Dynamic Executor Scaling
+* Dynamic Resource Allocation and External Shuffle Service
 * Local File Dependency Management
 * Spark Application Management
 * Job Queues and Resource Management
-
-You can refer to the [documentation](https://apache-spark-on-k8s.github.io/userdocs/) if you want to try these features
-and provide feedback to the development team.
 
 # Configuration
 
@@ -643,23 +686,24 @@ specific to Spark on Kubernetes.
   <td><code>spark.kubernetes.driver.limit.cores</code></td>
   <td>(none)</td>
   <td>
-    Specify a hard cpu [limit](https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#resource-requests-and-limits-of-pod-and-container) for the driver pod.
+    Specify a hard cpu <a href="https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#resource-requests-and-limits-of-pod-and-container">limit</a> for the driver pod.
   </td>
 </tr>
 <tr>
   <td><code>spark.kubernetes.executor.request.cores</code></td>
   <td>(none)</td>
   <td>
-    Specify the cpu request for each executor pod. Values conform to the Kubernetes [convention](https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#meaning-of-cpu). 
-    Example values include 0.1, 500m, 1.5, 5, etc., with the definition of cpu units documented in [CPU units](https://kubernetes.io/docs/tasks/configure-pod-container/assign-cpu-resource/#cpu-units).   
+    Specify the cpu request for each executor pod. Values conform to the Kubernetes <a href="https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#meaning-of-cpu">convention</a>.
+    Example values include 0.1, 500m, 1.5, 5, etc., with the definition of cpu units documented in <a href="https://kubernetes.io/docs/tasks/configure-pod-container/assign-cpu-resource/#cpu-units">CPU units</a>.
     This is distinct from <code>spark.executor.cores</code>: it is only used and takes precedence over <code>spark.executor.cores</code> for specifying the executor pod cpu request if set. Task 
     parallelism, e.g., number of tasks an executor can run concurrently is not affected by this.
+  </td>
 </tr>
 <tr>
   <td><code>spark.kubernetes.executor.limit.cores</code></td>
   <td>(none)</td>
   <td>
-    Specify a hard cpu [limit](https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#resource-requests-and-limits-of-pod-and-container) for each executor pod launched for the Spark Application.
+    Specify a hard cpu <a href="https://kubernetes.io/docs/concepts/configuration/manage-compute-resources-container/#resource-requests-and-limits-of-pod-and-container">limit</a> for each executor pod launched for the Spark Application.
   </td>
 </tr>
 <tr>

@@ -124,7 +124,7 @@ private [sql] object GenArrayData {
       val unsafeArraySizeInBytes =
         UnsafeArrayData.calculateHeaderPortionInBytes(numElements) +
         ByteArrayMethods.roundNumberOfBytesToNearestWord(elementType.defaultSize * numElements)
-      val baseOffset = Platform.BYTE_ARRAY_OFFSET
+      val baseOffset = "Platform.BYTE_ARRAY_OFFSET"
 
       val primitiveValueTypeName = CodeGenerator.primitiveTypeName(elementType)
       val assignments = elementsCode.zipWithIndex.map { case (eval, i) =>
@@ -248,7 +248,7 @@ case class CreateMap(children: Seq[Expression]) extends Expression {
       in keys should not be null""",
   examples = """
     Examples:
-      > SELECT _FUNC_([1.0, 3.0], ['2', '4']);
+      > SELECT _FUNC_(array(1.0, 3.0), array('2', '4'));
        {1.0:"2",3.0:"4"}
   """, since = "2.4.0")
 case class MapFromArrays(left: Expression, right: Expression)
@@ -379,10 +379,7 @@ trait CreateNamedStructLike extends Expression {
   }
 
   override def checkInputDataTypes(): TypeCheckResult = {
-    if (children.length < 1) {
-      TypeCheckResult.TypeCheckFailure(
-        s"input to function $prettyName requires at least one argument")
-    } else if (children.size % 2 != 0) {
+    if (children.size % 2 != 0) {
       TypeCheckResult.TypeCheckFailure(s"$prettyName expects an even number of arguments.")
     } else {
       val invalidNames = nameExprs.filterNot(e => e.foldable && e.dataType == StringType)

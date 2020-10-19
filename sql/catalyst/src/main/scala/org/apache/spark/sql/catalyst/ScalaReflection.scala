@@ -19,8 +19,11 @@ package org.apache.spark.sql.catalyst
 
 import java.lang.reflect.Constructor
 
+import scala.util.Properties
+
 import org.apache.commons.lang3.reflect.ConstructorUtils
 
+import org.apache.spark.internal.Logging
 import org.apache.spark.sql.catalyst.analysis.{GetColumnByOrdinal, UnresolvedAttribute, UnresolvedExtractValue}
 import org.apache.spark.sql.catalyst.expressions._
 import org.apache.spark.sql.catalyst.expressions.objects._
@@ -35,6 +38,9 @@ import org.apache.spark.unsafe.types.{CalendarInterval, UTF8String}
  * case classes.
  */
 trait DefinedByConstructorParams
+
+
+private[catalyst] object ScalaSubtypeLock
 
 
 /**
@@ -65,19 +71,32 @@ object ScalaReflection extends ScalaReflection {
    */
   def dataTypeFor[T : TypeTag]: DataType = dataTypeFor(localTypeOf[T])
 
+  /**
+   * Synchronize to prevent concurrent usage of `<:<` operator.
+   * This operator is not thread safe in any current version of scala; i.e.
+   * (2.11.12, 2.12.10, 2.13.0-M5).
+   *
+   * See https://github.com/scala/bug/issues/10766
+   */
+  private[catalyst] def isSubtype(tpe1: `Type`, tpe2: `Type`): Boolean = {
+    ScalaSubtypeLock.synchronized {
+      tpe1 <:< tpe2
+    }
+  }
+
   private def dataTypeFor(tpe: `Type`): DataType = cleanUpReflectionObjects {
     tpe.dealias match {
-      case t if t <:< definitions.NullTpe => NullType
-      case t if t <:< definitions.IntTpe => IntegerType
-      case t if t <:< definitions.LongTpe => LongType
-      case t if t <:< definitions.DoubleTpe => DoubleType
-      case t if t <:< definitions.FloatTpe => FloatType
-      case t if t <:< definitions.ShortTpe => ShortType
-      case t if t <:< definitions.ByteTpe => ByteType
-      case t if t <:< definitions.BooleanTpe => BooleanType
-      case t if t <:< localTypeOf[Array[Byte]] => BinaryType
-      case t if t <:< localTypeOf[CalendarInterval] => CalendarIntervalType
-      case t if t <:< localTypeOf[Decimal] => DecimalType.SYSTEM_DEFAULT
+      case t if isSubtype(t, definitions.NullTpe) => NullType
+      case t if isSubtype(t, definitions.IntTpe) => IntegerType
+      case t if isSubtype(t, definitions.LongTpe) => LongType
+      case t if isSubtype(t, definitions.DoubleTpe) => DoubleType
+      case t if isSubtype(t, definitions.FloatTpe) => FloatType
+      case t if isSubtype(t, definitions.ShortTpe) => ShortType
+      case t if isSubtype(t, definitions.ByteTpe) => ByteType
+      case t if isSubtype(t, definitions.BooleanTpe) => BooleanType
+      case t if isSubtype(t, localTypeOf[Array[Byte]]) => BinaryType
+      case t if isSubtype(t, localTypeOf[CalendarInterval]) => CalendarIntervalType
+      case t if isSubtype(t, localTypeOf[Decimal]) => DecimalType.SYSTEM_DEFAULT
       case _ =>
         val className = getClassNameFromType(tpe)
         className match {
@@ -95,18 +114,21 @@ object ScalaReflection extends ScalaReflection {
    * Given a type `T` this function constructs `ObjectType` that holds a class of type
    * `Array[T]`.
    *
-   * Special handling is performed for primitive types to map them back to their raw
-   * JVM form instead of the Scala Array that handles auto boxing.
+   * Special handling is performed for primitive types, Array[Byte], CalendarInterval and Decimal
+   * to map them back to their raw JVM form instead of the Scala Array that handles auto boxing.
    */
   private def arrayClassFor(tpe: `Type`): ObjectType = cleanUpReflectionObjects {
     val cls = tpe.dealias match {
-      case t if t <:< definitions.IntTpe => classOf[Array[Int]]
-      case t if t <:< definitions.LongTpe => classOf[Array[Long]]
-      case t if t <:< definitions.DoubleTpe => classOf[Array[Double]]
-      case t if t <:< definitions.FloatTpe => classOf[Array[Float]]
-      case t if t <:< definitions.ShortTpe => classOf[Array[Short]]
-      case t if t <:< definitions.ByteTpe => classOf[Array[Byte]]
-      case t if t <:< definitions.BooleanTpe => classOf[Array[Boolean]]
+      case t if isSubtype(t, definitions.IntTpe) => classOf[Array[Int]]
+      case t if isSubtype(t, definitions.LongTpe) => classOf[Array[Long]]
+      case t if isSubtype(t, definitions.DoubleTpe) => classOf[Array[Double]]
+      case t if isSubtype(t, definitions.FloatTpe) => classOf[Array[Float]]
+      case t if isSubtype(t, definitions.ShortTpe) => classOf[Array[Short]]
+      case t if isSubtype(t, definitions.ByteTpe) => classOf[Array[Byte]]
+      case t if isSubtype(t, definitions.BooleanTpe) => classOf[Array[Boolean]]
+      case t if isSubtype(t, localTypeOf[Array[Byte]]) => classOf[Array[Array[Byte]]]
+      case t if isSubtype(t, localTypeOf[CalendarInterval]) => classOf[Array[CalendarInterval]]
+      case t if isSubtype(t, localTypeOf[Decimal]) => classOf[Array[Decimal]]
       case other =>
         // There is probably a better way to do this, but I couldn't find it...
         val elementType = dataTypeFor(other).asInstanceOf[ObjectType].cls
@@ -207,48 +229,48 @@ object ScalaReflection extends ScalaReflection {
     tpe.dealias match {
       case t if !dataTypeFor(t).isInstanceOf[ObjectType] => getPath
 
-      case t if t <:< localTypeOf[Option[_]] =>
+      case t if isSubtype(t, localTypeOf[Option[_]]) =>
         val TypeRef(_, _, Seq(optType)) = t
         val className = getClassNameFromType(optType)
         val newTypePath = s"""- option value class: "$className"""" +: walkedTypePath
         WrapOption(deserializerFor(optType, path, newTypePath), dataTypeFor(optType))
 
-      case t if t <:< localTypeOf[java.lang.Integer] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Integer]) =>
         val boxedType = classOf[java.lang.Integer]
         val objectType = ObjectType(boxedType)
         StaticInvoke(boxedType, objectType, "valueOf", getPath :: Nil, returnNullable = false)
 
-      case t if t <:< localTypeOf[java.lang.Long] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Long]) =>
         val boxedType = classOf[java.lang.Long]
         val objectType = ObjectType(boxedType)
         StaticInvoke(boxedType, objectType, "valueOf", getPath :: Nil, returnNullable = false)
 
-      case t if t <:< localTypeOf[java.lang.Double] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Double]) =>
         val boxedType = classOf[java.lang.Double]
         val objectType = ObjectType(boxedType)
         StaticInvoke(boxedType, objectType, "valueOf", getPath :: Nil, returnNullable = false)
 
-      case t if t <:< localTypeOf[java.lang.Float] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Float]) =>
         val boxedType = classOf[java.lang.Float]
         val objectType = ObjectType(boxedType)
         StaticInvoke(boxedType, objectType, "valueOf", getPath :: Nil, returnNullable = false)
 
-      case t if t <:< localTypeOf[java.lang.Short] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Short]) =>
         val boxedType = classOf[java.lang.Short]
         val objectType = ObjectType(boxedType)
         StaticInvoke(boxedType, objectType, "valueOf", getPath :: Nil, returnNullable = false)
 
-      case t if t <:< localTypeOf[java.lang.Byte] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Byte]) =>
         val boxedType = classOf[java.lang.Byte]
         val objectType = ObjectType(boxedType)
         StaticInvoke(boxedType, objectType, "valueOf", getPath :: Nil, returnNullable = false)
 
-      case t if t <:< localTypeOf[java.lang.Boolean] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Boolean]) =>
         val boxedType = classOf[java.lang.Boolean]
         val objectType = ObjectType(boxedType)
         StaticInvoke(boxedType, objectType, "valueOf", getPath :: Nil, returnNullable = false)
 
-      case t if t <:< localTypeOf[java.sql.Date] =>
+      case t if isSubtype(t, localTypeOf[java.sql.Date]) =>
         StaticInvoke(
           DateTimeUtils.getClass,
           ObjectType(classOf[java.sql.Date]),
@@ -256,7 +278,7 @@ object ScalaReflection extends ScalaReflection {
           getPath :: Nil,
           returnNullable = false)
 
-      case t if t <:< localTypeOf[java.sql.Timestamp] =>
+      case t if isSubtype(t, localTypeOf[java.sql.Timestamp]) =>
         StaticInvoke(
           DateTimeUtils.getClass,
           ObjectType(classOf[java.sql.Timestamp]),
@@ -264,25 +286,25 @@ object ScalaReflection extends ScalaReflection {
           getPath :: Nil,
           returnNullable = false)
 
-      case t if t <:< localTypeOf[java.lang.String] =>
+      case t if isSubtype(t, localTypeOf[java.lang.String]) =>
         Invoke(getPath, "toString", ObjectType(classOf[String]), returnNullable = false)
 
-      case t if t <:< localTypeOf[java.math.BigDecimal] =>
+      case t if isSubtype(t, localTypeOf[java.math.BigDecimal]) =>
         Invoke(getPath, "toJavaBigDecimal", ObjectType(classOf[java.math.BigDecimal]),
           returnNullable = false)
 
-      case t if t <:< localTypeOf[BigDecimal] =>
+      case t if isSubtype(t, localTypeOf[BigDecimal]) =>
         Invoke(getPath, "toBigDecimal", ObjectType(classOf[BigDecimal]), returnNullable = false)
 
-      case t if t <:< localTypeOf[java.math.BigInteger] =>
+      case t if isSubtype(t, localTypeOf[java.math.BigInteger]) =>
         Invoke(getPath, "toJavaBigInteger", ObjectType(classOf[java.math.BigInteger]),
           returnNullable = false)
 
-      case t if t <:< localTypeOf[scala.math.BigInt] =>
+      case t if isSubtype(t, localTypeOf[scala.math.BigInt]) =>
         Invoke(getPath, "toScalaBigInt", ObjectType(classOf[scala.math.BigInt]),
           returnNullable = false)
 
-      case t if t <:< localTypeOf[Array[_]] =>
+      case t if isSubtype(t, localTypeOf[Array[_]]) =>
         val TypeRef(_, _, Seq(elementType)) = t
         val Schema(dataType, elementNullable) = schemaFor(elementType)
         val className = getClassNameFromType(elementType)
@@ -306,13 +328,13 @@ object ScalaReflection extends ScalaReflection {
           Invoke(arrayData, "array", arrayCls, returnNullable = false)
         } else {
           val primitiveMethod = elementType match {
-            case t if t <:< definitions.IntTpe => "toIntArray"
-            case t if t <:< definitions.LongTpe => "toLongArray"
-            case t if t <:< definitions.DoubleTpe => "toDoubleArray"
-            case t if t <:< definitions.FloatTpe => "toFloatArray"
-            case t if t <:< definitions.ShortTpe => "toShortArray"
-            case t if t <:< definitions.ByteTpe => "toByteArray"
-            case t if t <:< definitions.BooleanTpe => "toBooleanArray"
+            case t if isSubtype(t, definitions.IntTpe) => "toIntArray"
+            case t if isSubtype(t, definitions.LongTpe) => "toLongArray"
+            case t if isSubtype(t, definitions.DoubleTpe) => "toDoubleArray"
+            case t if isSubtype(t, definitions.FloatTpe) => "toFloatArray"
+            case t if isSubtype(t, definitions.ShortTpe) => "toShortArray"
+            case t if isSubtype(t, definitions.ByteTpe) => "toByteArray"
+            case t if isSubtype(t, definitions.BooleanTpe) => "toBooleanArray"
             case other => throw new IllegalStateException("expect primitive array element type " +
               "but got " + other)
           }
@@ -321,8 +343,8 @@ object ScalaReflection extends ScalaReflection {
 
       // We serialize a `Set` to Catalyst array. When we deserialize a Catalyst array
       // to a `Set`, if there are duplicated elements, the elements will be de-duplicated.
-      case t if t <:< localTypeOf[Seq[_]] ||
-          t <:< localTypeOf[scala.collection.Set[_]] =>
+      case t if isSubtype(t, localTypeOf[Seq[_]]) ||
+          isSubtype(t, localTypeOf[scala.collection.Set[_]]) =>
         val TypeRef(_, _, Seq(elementType)) = t
         val Schema(dataType, elementNullable) = schemaFor(elementType)
         val className = getClassNameFromType(elementType)
@@ -341,14 +363,14 @@ object ScalaReflection extends ScalaReflection {
 
         val companion = t.dealias.typeSymbol.companion.typeSignature
         val cls = companion.member(TermName("newBuilder")) match {
-          case NoSymbol if t <:< localTypeOf[Seq[_]] => classOf[Seq[_]]
-          case NoSymbol if t <:< localTypeOf[scala.collection.Set[_]] =>
+          case NoSymbol if isSubtype(t, localTypeOf[Seq[_]]) => classOf[Seq[_]]
+          case NoSymbol if isSubtype(t, localTypeOf[scala.collection.Set[_]]) =>
             classOf[scala.collection.Set[_]]
           case _ => mirror.runtimeClass(t.typeSymbol.asClass)
         }
         UnresolvedMapObjects(mapFunction, getPath, Some(cls))
 
-      case t if t <:< localTypeOf[Map[_, _]] =>
+      case t if isSubtype(t, localTypeOf[Map[_, _]]) =>
         // TODO: add walked type path for map
         val TypeRef(_, _, Seq(keyType, valueType)) = t
 
@@ -483,7 +505,7 @@ object ScalaReflection extends ScalaReflection {
     tpe.dealias match {
       case _ if !inputObject.dataType.isInstanceOf[ObjectType] => inputObject
 
-      case t if t <:< localTypeOf[Option[_]] =>
+      case t if isSubtype(t, localTypeOf[Option[_]]) =>
         val TypeRef(_, _, Seq(optType)) = t
         val className = getClassNameFromType(optType)
         val newPath = s"""- option value class: "$className"""" +: walkedTypePath
@@ -493,15 +515,15 @@ object ScalaReflection extends ScalaReflection {
       // Since List[_] also belongs to localTypeOf[Product], we put this case before
       // "case t if definedByConstructorParams(t)" to make sure it will match to the
       // case "localTypeOf[Seq[_]]"
-      case t if t <:< localTypeOf[Seq[_]] =>
+      case t if isSubtype(t, localTypeOf[Seq[_]]) =>
         val TypeRef(_, _, Seq(elementType)) = t
         toCatalystArray(inputObject, elementType)
 
-      case t if t <:< localTypeOf[Array[_]] =>
+      case t if isSubtype(t, localTypeOf[Array[_]]) =>
         val TypeRef(_, _, Seq(elementType)) = t
         toCatalystArray(inputObject, elementType)
 
-      case t if t <:< localTypeOf[Map[_, _]] =>
+      case t if isSubtype(t, localTypeOf[Map[_, _]]) =>
         val TypeRef(_, _, Seq(keyType, valueType)) = t
         val keyClsName = getClassNameFromType(keyType)
         val valueClsName = getClassNameFromType(valueType)
@@ -517,7 +539,7 @@ object ScalaReflection extends ScalaReflection {
           serializerFor(_, valueType, valuePath, seenTypeSet),
           valueNullable = !valueType.typeSymbol.asClass.isPrimitive)
 
-      case t if t <:< localTypeOf[scala.collection.Set[_]] =>
+      case t if isSubtype(t, localTypeOf[scala.collection.Set[_]]) =>
         val TypeRef(_, _, Seq(elementType)) = t
 
         // There's no corresponding Catalyst type for `Set`, we serialize a `Set` to Catalyst array.
@@ -530,7 +552,7 @@ object ScalaReflection extends ScalaReflection {
 
         toCatalystArray(newInput, elementType)
 
-      case t if t <:< localTypeOf[String] =>
+      case t if isSubtype(t, localTypeOf[String]) =>
         StaticInvoke(
           classOf[UTF8String],
           StringType,
@@ -538,7 +560,7 @@ object ScalaReflection extends ScalaReflection {
           inputObject :: Nil,
           returnNullable = false)
 
-      case t if t <:< localTypeOf[java.sql.Timestamp] =>
+      case t if isSubtype(t, localTypeOf[java.sql.Timestamp]) =>
         StaticInvoke(
           DateTimeUtils.getClass,
           TimestampType,
@@ -546,7 +568,7 @@ object ScalaReflection extends ScalaReflection {
           inputObject :: Nil,
           returnNullable = false)
 
-      case t if t <:< localTypeOf[java.sql.Date] =>
+      case t if isSubtype(t, localTypeOf[java.sql.Date]) =>
         StaticInvoke(
           DateTimeUtils.getClass,
           DateType,
@@ -554,7 +576,7 @@ object ScalaReflection extends ScalaReflection {
           inputObject :: Nil,
           returnNullable = false)
 
-      case t if t <:< localTypeOf[BigDecimal] =>
+      case t if isSubtype(t, localTypeOf[BigDecimal]) =>
         StaticInvoke(
           Decimal.getClass,
           DecimalType.SYSTEM_DEFAULT,
@@ -562,7 +584,7 @@ object ScalaReflection extends ScalaReflection {
           inputObject :: Nil,
           returnNullable = false)
 
-      case t if t <:< localTypeOf[java.math.BigDecimal] =>
+      case t if isSubtype(t, localTypeOf[java.math.BigDecimal]) =>
         StaticInvoke(
           Decimal.getClass,
           DecimalType.SYSTEM_DEFAULT,
@@ -570,7 +592,7 @@ object ScalaReflection extends ScalaReflection {
           inputObject :: Nil,
           returnNullable = false)
 
-      case t if t <:< localTypeOf[java.math.BigInteger] =>
+      case t if isSubtype(t, localTypeOf[java.math.BigInteger]) =>
         StaticInvoke(
           Decimal.getClass,
           DecimalType.BigIntDecimal,
@@ -578,7 +600,7 @@ object ScalaReflection extends ScalaReflection {
           inputObject :: Nil,
           returnNullable = false)
 
-      case t if t <:< localTypeOf[scala.math.BigInt] =>
+      case t if isSubtype(t, localTypeOf[scala.math.BigInt]) =>
         StaticInvoke(
           Decimal.getClass,
           DecimalType.BigIntDecimal,
@@ -586,19 +608,19 @@ object ScalaReflection extends ScalaReflection {
           inputObject :: Nil,
           returnNullable = false)
 
-      case t if t <:< localTypeOf[java.lang.Integer] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Integer]) =>
         Invoke(inputObject, "intValue", IntegerType)
-      case t if t <:< localTypeOf[java.lang.Long] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Long]) =>
         Invoke(inputObject, "longValue", LongType)
-      case t if t <:< localTypeOf[java.lang.Double] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Double]) =>
         Invoke(inputObject, "doubleValue", DoubleType)
-      case t if t <:< localTypeOf[java.lang.Float] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Float]) =>
         Invoke(inputObject, "floatValue", FloatType)
-      case t if t <:< localTypeOf[java.lang.Short] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Short]) =>
         Invoke(inputObject, "shortValue", ShortType)
-      case t if t <:< localTypeOf[java.lang.Byte] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Byte]) =>
         Invoke(inputObject, "byteValue", ByteType)
-      case t if t <:< localTypeOf[java.lang.Boolean] =>
+      case t if isSubtype(t, localTypeOf[java.lang.Boolean]) =>
         Invoke(inputObject, "booleanValue", BooleanType)
 
       case t if t.typeSymbol.annotations.exists(_.tree.tpe =:= typeOf[SQLUserDefinedType]) =>
@@ -655,7 +677,7 @@ object ScalaReflection extends ScalaReflection {
    */
   def optionOfProductType(tpe: `Type`): Boolean = cleanUpReflectionObjects {
     tpe.dealias match {
-      case t if t <:< localTypeOf[Option[_]] =>
+      case t if isSubtype(t, localTypeOf[Option[_]]) =>
         val TypeRef(_, _, Seq(optType)) = t
         definedByConstructorParams(optType)
       case _ => false
@@ -721,7 +743,7 @@ object ScalaReflection extends ScalaReflection {
     tpe.dealias match {
       // this must be the first case, since all objects in scala are instances of Null, therefore
       // Null type would wrongly match the first of them, which is Option as of now
-      case t if t <:< definitions.NullTpe => Schema(NullType, nullable = true)
+      case t if isSubtype(t, definitions.NullTpe) => Schema(NullType, nullable = true)
       case t if t.typeSymbol.annotations.exists(_.tree.tpe =:= typeOf[SQLUserDefinedType]) =>
         val udt = getClassFromType(t).getAnnotation(classOf[SQLUserDefinedType]).udt().newInstance()
         Schema(udt, nullable = true)
@@ -729,52 +751,56 @@ object ScalaReflection extends ScalaReflection {
         val udt = UDTRegistration.getUDTFor(getClassNameFromType(t)).get.newInstance()
           .asInstanceOf[UserDefinedType[_]]
         Schema(udt, nullable = true)
-      case t if t <:< localTypeOf[Option[_]] =>
+      case t if isSubtype(t, localTypeOf[Option[_]]) =>
         val TypeRef(_, _, Seq(optType)) = t
         Schema(schemaFor(optType).dataType, nullable = true)
-      case t if t <:< localTypeOf[Array[Byte]] => Schema(BinaryType, nullable = true)
-      case t if t <:< localTypeOf[Array[_]] =>
+      case t if isSubtype(t, localTypeOf[Array[Byte]]) => Schema(BinaryType, nullable = true)
+      case t if isSubtype(t, localTypeOf[Array[_]]) =>
         val TypeRef(_, _, Seq(elementType)) = t
         val Schema(dataType, nullable) = schemaFor(elementType)
         Schema(ArrayType(dataType, containsNull = nullable), nullable = true)
-      case t if t <:< localTypeOf[Seq[_]] =>
+      case t if isSubtype(t, localTypeOf[Seq[_]]) =>
         val TypeRef(_, _, Seq(elementType)) = t
         val Schema(dataType, nullable) = schemaFor(elementType)
         Schema(ArrayType(dataType, containsNull = nullable), nullable = true)
-      case t if t <:< localTypeOf[Map[_, _]] =>
+      case t if isSubtype(t, localTypeOf[Map[_, _]]) =>
         val TypeRef(_, _, Seq(keyType, valueType)) = t
         val Schema(valueDataType, valueNullable) = schemaFor(valueType)
         Schema(MapType(schemaFor(keyType).dataType,
           valueDataType, valueContainsNull = valueNullable), nullable = true)
-      case t if t <:< localTypeOf[Set[_]] =>
+      case t if isSubtype(t, localTypeOf[Set[_]]) =>
         val TypeRef(_, _, Seq(elementType)) = t
         val Schema(dataType, nullable) = schemaFor(elementType)
         Schema(ArrayType(dataType, containsNull = nullable), nullable = true)
-      case t if t <:< localTypeOf[String] => Schema(StringType, nullable = true)
-      case t if t <:< localTypeOf[java.sql.Timestamp] => Schema(TimestampType, nullable = true)
-      case t if t <:< localTypeOf[java.sql.Date] => Schema(DateType, nullable = true)
-      case t if t <:< localTypeOf[BigDecimal] => Schema(DecimalType.SYSTEM_DEFAULT, nullable = true)
-      case t if t <:< localTypeOf[java.math.BigDecimal] =>
+      case t if isSubtype(t, localTypeOf[String]) => Schema(StringType, nullable = true)
+      case t if isSubtype(t, localTypeOf[java.sql.Timestamp]) =>
+        Schema(TimestampType, nullable = true)
+      case t if isSubtype(t, localTypeOf[java.sql.Date]) =>
+        Schema(DateType, nullable = true)
+      case t if isSubtype(t, localTypeOf[BigDecimal]) =>
         Schema(DecimalType.SYSTEM_DEFAULT, nullable = true)
-      case t if t <:< localTypeOf[java.math.BigInteger] =>
+      case t if isSubtype(t, localTypeOf[java.math.BigDecimal]) =>
+        Schema(DecimalType.SYSTEM_DEFAULT, nullable = true)
+      case t if isSubtype(t, localTypeOf[java.math.BigInteger]) =>
         Schema(DecimalType.BigIntDecimal, nullable = true)
-      case t if t <:< localTypeOf[scala.math.BigInt] =>
+      case t if isSubtype(t, localTypeOf[scala.math.BigInt]) =>
         Schema(DecimalType.BigIntDecimal, nullable = true)
-      case t if t <:< localTypeOf[Decimal] => Schema(DecimalType.SYSTEM_DEFAULT, nullable = true)
-      case t if t <:< localTypeOf[java.lang.Integer] => Schema(IntegerType, nullable = true)
-      case t if t <:< localTypeOf[java.lang.Long] => Schema(LongType, nullable = true)
-      case t if t <:< localTypeOf[java.lang.Double] => Schema(DoubleType, nullable = true)
-      case t if t <:< localTypeOf[java.lang.Float] => Schema(FloatType, nullable = true)
-      case t if t <:< localTypeOf[java.lang.Short] => Schema(ShortType, nullable = true)
-      case t if t <:< localTypeOf[java.lang.Byte] => Schema(ByteType, nullable = true)
-      case t if t <:< localTypeOf[java.lang.Boolean] => Schema(BooleanType, nullable = true)
-      case t if t <:< definitions.IntTpe => Schema(IntegerType, nullable = false)
-      case t if t <:< definitions.LongTpe => Schema(LongType, nullable = false)
-      case t if t <:< definitions.DoubleTpe => Schema(DoubleType, nullable = false)
-      case t if t <:< definitions.FloatTpe => Schema(FloatType, nullable = false)
-      case t if t <:< definitions.ShortTpe => Schema(ShortType, nullable = false)
-      case t if t <:< definitions.ByteTpe => Schema(ByteType, nullable = false)
-      case t if t <:< definitions.BooleanTpe => Schema(BooleanType, nullable = false)
+      case t if isSubtype(t, localTypeOf[Decimal]) =>
+        Schema(DecimalType.SYSTEM_DEFAULT, nullable = true)
+      case t if isSubtype(t, localTypeOf[java.lang.Integer]) => Schema(IntegerType, nullable = true)
+      case t if isSubtype(t, localTypeOf[java.lang.Long]) => Schema(LongType, nullable = true)
+      case t if isSubtype(t, localTypeOf[java.lang.Double]) => Schema(DoubleType, nullable = true)
+      case t if isSubtype(t, localTypeOf[java.lang.Float]) => Schema(FloatType, nullable = true)
+      case t if isSubtype(t, localTypeOf[java.lang.Short]) => Schema(ShortType, nullable = true)
+      case t if isSubtype(t, localTypeOf[java.lang.Byte]) => Schema(ByteType, nullable = true)
+      case t if isSubtype(t, localTypeOf[java.lang.Boolean]) => Schema(BooleanType, nullable = true)
+      case t if isSubtype(t, definitions.IntTpe) => Schema(IntegerType, nullable = false)
+      case t if isSubtype(t, definitions.LongTpe) => Schema(LongType, nullable = false)
+      case t if isSubtype(t, definitions.DoubleTpe) => Schema(DoubleType, nullable = false)
+      case t if isSubtype(t, definitions.FloatTpe) => Schema(FloatType, nullable = false)
+      case t if isSubtype(t, definitions.ShortTpe) => Schema(ShortType, nullable = false)
+      case t if isSubtype(t, definitions.ByteTpe) => Schema(ByteType, nullable = false)
+      case t if isSubtype(t, definitions.BooleanTpe) => Schema(BooleanType, nullable = false)
       case t if definedByConstructorParams(t) =>
         val params = getConstructorParameters(t)
         Schema(StructType(
@@ -802,9 +828,9 @@ object ScalaReflection extends ScalaReflection {
   def definedByConstructorParams(tpe: Type): Boolean = cleanUpReflectionObjects {
     tpe.dealias match {
       // `Option` is a `Product`, but we don't wanna treat `Option[Int]` as a struct type.
-      case t if t <:< localTypeOf[Option[_]] => definedByConstructorParams(t.typeArgs.head)
-      case _ => tpe.dealias <:< localTypeOf[Product] ||
-        tpe.dealias <:< localTypeOf[DefinedByConstructorParams]
+      case t if isSubtype(t, localTypeOf[Option[_]]) => definedByConstructorParams(t.typeArgs.head)
+      case _ => isSubtype(tpe.dealias, localTypeOf[Product]) ||
+        isSubtype(tpe.dealias, localTypeOf[DefinedByConstructorParams])
     }
   }
 
@@ -879,7 +905,7 @@ object ScalaReflection extends ScalaReflection {
  * Support for generating catalyst schemas for scala objects.  Note that unlike its companion
  * object, this trait able to work in both the runtime and the compile time (macro) universe.
  */
-trait ScalaReflection {
+trait ScalaReflection extends Logging {
   /** The universe we work in (runtime or macro) */
   val universe: scala.reflect.api.Universe
 
@@ -933,12 +959,20 @@ trait ScalaReflection {
   }
 
   /**
-   * Returns classes of input parameters of scala function object.
+   * Returns the nullability of the input parameter types of the scala function object.
+   *
+   * Note that this only works with Scala 2.11, and the information returned may be inaccurate if
+   * used with a different Scala version.
    */
-  def getParameterTypes(func: AnyRef): Seq[Class[_]] = {
+  def getParameterTypeNullability(func: AnyRef): Seq[Boolean] = {
+    if (!Properties.versionString.contains("2.11")) {
+      logWarning(s"Scala ${Properties.versionString} cannot get type nullability correctly via " +
+        "reflection, thus Spark cannot add proper input null check for UDF. To avoid this " +
+        "problem, use the typed UDF interfaces instead.")
+    }
     val methods = func.getClass.getMethods.filter(m => m.getName == "apply" && !m.isBridge)
     assert(methods.length == 1)
-    methods.head.getParameterTypes
+    methods.head.getParameterTypes.map(!_.isPrimitive)
   }
 
   /**
