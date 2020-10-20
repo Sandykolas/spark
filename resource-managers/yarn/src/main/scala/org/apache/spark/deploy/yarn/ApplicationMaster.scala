@@ -665,7 +665,7 @@ private[spark] class ApplicationMaster(args: ApplicationMasterArguments) extends
     var userArgs = args.userArgs
     if (args.primaryPyFile != null && args.primaryPyFile.endsWith(".py")) {
       // When running pyspark, the app is run using PythonRunner. The second argument is the list
-      // of files to add to PYTHONPATH, which Client.scala already handles, so it's empty.
+      // of files to add to PYTHONPATH, which C already handles, so it's empty.
       userArgs = Seq(args.primaryPyFile, "") ++ userArgs
     }
     if (args.primaryRFile != null && args.primaryRFile.endsWith(".R")) {

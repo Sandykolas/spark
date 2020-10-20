@@ -23,9 +23,9 @@ import java.sql.Connection
 import scala.collection.JavaConverters._
 import scala.util.control.NonFatal
 
-import com.spotify.docker.client._
-import com.spotify.docker.client.exceptions.ImageNotFoundException
-import com.spotify.docker.client.messages.{ContainerConfig, HostConfig, PortBinding}
+import com.spotify.docker.._
+import com.spotify.docker..exceptions.ImageNotFoundException
+import com.spotify.docker..messages.{ContainerConfig, HostConfig, PortBinding}
 import org.scalatest.BeforeAndAfterAll
 import org.scalatest.concurrent.Eventually
 import org.scalatest.time.SpanSugar._
@@ -74,14 +74,14 @@ abstract class DockerJDBCIntegrationSuite
 
   val db: DatabaseOnDocker
 
-  private var docker: DockerClient = _
+  private var docker: Docker = _
   private var containerId: String = _
   protected var jdbcUrl: String = _
 
   override def beforeAll() {
     super.beforeAll()
     try {
-      docker = DefaultDockerClient.fromEnv.build()
+      docker = DefaultDocker.fromEnv.build()
       // Check that Docker is actually up
       try {
         docker.ping()

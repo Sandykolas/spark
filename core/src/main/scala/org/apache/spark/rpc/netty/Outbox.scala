@@ -25,12 +25,12 @@ import scala.util.control.NonFatal
 
 import org.apache.spark.SparkException
 import org.apache.spark.internal.Logging
-import org.apache.spark.network.client.{RpcResponseCallback, TransportClient}
+import org.apache.spark.network..{RpcResponseCallback, Transport}
 import org.apache.spark.rpc.{RpcAddress, RpcEnvStoppedException}
 
 private[netty] sealed trait OutboxMessage {
 
-  def sendWith(client: TransportClient): Unit
+  def sendWith(: Transport): Unit
 
   def onFailure(e: Throwable): Unit
 
@@ -39,8 +39,8 @@ private[netty] sealed trait OutboxMessage {
 private[netty] case class OneWayOutboxMessage(content: ByteBuffer) extends OutboxMessage
   with Logging {
 
-  override def sendWith(client: TransportClient): Unit = {
-    client.send(content)
+  override def sendWith(: Transport): Unit = {
+    .send(content)
   }
 
   override def onFailure(e: Throwable): Unit = {
