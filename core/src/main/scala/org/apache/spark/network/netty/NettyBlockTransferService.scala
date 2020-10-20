@@ -112,7 +112,7 @@ private[spark] class NettyBlockTransferService(
       val maxRetries = transportConf.maxIORetries()
       val blockFetchStarter = new RetryingBlockFetcher.BlockFetchStarter {
         override def createAndStart(blockIds: Array[String], listener: BlockFetchingListener) {
-          val client = clientFactory.createClient(host, port,maxRetries > 0)
+          val client = clientFactory.createClient(host, port, maxRetries > 0)
           new OneForOneBlockFetcher(client, appId, execId, blockIds, listener,
             transportConf, tempFileManager).start()
         }
