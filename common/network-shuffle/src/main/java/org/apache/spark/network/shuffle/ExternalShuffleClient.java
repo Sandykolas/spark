@@ -104,7 +104,6 @@ public class ExternalShuffleClient extends ShuffleClient {
               blockIds1, listener1, conf, downloadFileManager).start();
           };
 
-      int maxRetries = conf.maxIORetries();
       if (maxRetries > 0) {
         // Note this Fetcher will correctly handle maxRetries == 0; we avoid it just in case there's
         // a bug in this code. We should remove the if statement once we're sure of the stability.
