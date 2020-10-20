@@ -70,7 +70,7 @@ public class TransportClientFactory implements Closeable {
         locks[i] = new Object();
       }
     }
-    lastConnectionFailed = 0;
+//    lastConnectionFailed = 0;
   }
 
   private static final Logger logger = LoggerFactory.getLogger(TransportClientFactory.class);
