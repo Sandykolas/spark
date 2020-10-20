@@ -61,6 +61,7 @@ public class TransportClientFactory implements Closeable {
   private static class ClientPool {
     TransportClient[] clients;
     Object[] locks;
+    volatile long lastConnectionFailed;
 
     ClientPool(int size) {
       clients = new TransportClient[size];
@@ -69,6 +70,7 @@ public class TransportClientFactory implements Closeable {
         locks[i] = new Object();
       }
     }
+    lastConnectionFailed = 0;
   }
 
   private static final Logger logger = LoggerFactory.getLogger(TransportClientFactory.class);
@@ -86,6 +88,7 @@ public class TransportClientFactory implements Closeable {
   private EventLoopGroup workerGroup;
   private PooledByteBufAllocator pooledAllocator;
   private final NettyMemoryMetrics metrics;
+  private final int fastFailTimeWindow;
 
   public TransportClientFactory(
       TransportContext context,
@@ -107,6 +110,7 @@ public class TransportClientFactory implements Closeable {
       conf.preferDirectBufs(), false /* allowCache */, conf.clientThreads());
     this.metrics = new NettyMemoryMetrics(
       this.pooledAllocator, conf.getModuleName() + "-client", conf);
+    fastFailTimeWindow = (int)(conf.ioRetryWaitTimeMs() * 0.95);
   }
 
   public MetricSet getAllMetrics() {
@@ -127,7 +131,7 @@ public class TransportClientFactory implements Closeable {
    *
    * Concurrency: This method is safe to call from multiple threads.
    */
-  public TransportClient createClient(String remoteHost, int remotePort)
+  public TransportClient createClient(String remoteHost, int remotePort, boolean fastFail)
       throws IOException, InterruptedException {
     // Get connection from the connection pool first.
     // If it is not found or not active, create a new one.
@@ -184,10 +188,32 @@ public class TransportClientFactory implements Closeable {
           logger.info("Found inactive connection to {}, creating a new one.", resolvedAddress);
         }
       }
-      clientPool.clients[clientIndex] = createClient(resolvedAddress);
+      //clientPool.clients[clientIndex] = createClient(resolvedAddress);
+        // If this connection should fast fail when last connection failed in last fast fail time
+      // window and it did, fail this connection directly.
+      if (fastFail && System.currentTimeMillis() - clientPool.lastConnectionFailed <
+        fastFailTimeWindow) {
+        throw new IOException(
+          String.format("Connecting to %s failed in the last %s ms, fail this connection directly",
+            resolvedAddress, fastFailTimeWindow));
+      }
+      try {
+        clientPool.clients[clientIndex] = createClient(resolvedAddress);
+        clientPool.lastConnectionFailed = 0;
+      } catch (IOException e) {
+        clientPool.lastConnectionFailed = System.currentTimeMillis();
+        throw e;
+      }
       return clientPool.clients[clientIndex];
     }
   }
+
+
+  public TransportClient createClient(String remoteHost, int remotePort)
+    throws IOException, InterruptedException {
+      return createClient(remoteHost, remotePort, false);
+  }
+
 
   /**
    * Create a completely new {@link TransportClient} to the given remote host / port.
