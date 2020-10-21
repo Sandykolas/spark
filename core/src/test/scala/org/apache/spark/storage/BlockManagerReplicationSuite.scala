@@ -421,65 +421,65 @@ class BlockManagerReplicationSuite extends BlockManagerReplicationBehavior {
   conf.set("spark.kryoserializer.buffer", "1m")
 }
 
-class BlockManagerProactiveReplicationSuite extends BlockManagerReplicationBehavior {
-  val conf = new SparkConf(false).set("spark.app.id", "test")
-  conf.set("spark.kryoserializer.buffer", "1m")
-  conf.set("spark.storage.replication.proactive", "true")
-  conf.set("spark.storage.exceptionOnPinLeak", "true")
-
-  (2 to 5).foreach { i =>
-    test(s"proactive block replication - $i replicas - ${i - 1} block manager deletions") {
-      testProactiveReplication(i)
-    }
-  }
-
-  def testProactiveReplication(replicationFactor: Int) {
-    val blockSize = 1000
-    val storeSize = 10000
-    val initialStores = (1 to 10).map { i => makeBlockManager(storeSize, s"store$i") }
-
-    val blockId = "a1"
-
-    val storageLevel = StorageLevel(true, true, false, true, replicationFactor)
-    initialStores.head.putSingle(blockId, new Array[Byte](blockSize), storageLevel)
-
-    val blockLocations = master.getLocations(blockId)
-    logInfo(s"Initial locations : $blockLocations")
-
-    assert(blockLocations.size === replicationFactor)
-
-    // remove a random blockManager
-    val executorsToRemove = blockLocations.take(replicationFactor - 1).toSet
-    logInfo(s"Removing $executorsToRemove")
-    initialStores.filter(bm => executorsToRemove.contains(bm.blockManagerId)).foreach { bm =>
-      master.removeExecutor(bm.blockManagerId.executorId)
-      bm.stop()
-      // giving enough time for replication to happen and new block be reported to master
-      eventually(timeout(5 seconds), interval(100 millis)) {
-        val newLocations = master.getLocations(blockId).toSet
-        assert(newLocations.size === replicationFactor)
-      }
-    }
-
-    val newLocations = eventually(timeout(5 seconds), interval(100 millis)) {
-      val _newLocations = master.getLocations(blockId).toSet
-      assert(_newLocations.size === replicationFactor)
-      _newLocations
-    }
-    logInfo(s"New locations : $newLocations")
-
-    // new locations should not contain stopped block managers
-    assert(newLocations.forall(bmId => !executorsToRemove.contains(bmId)),
-      "New locations contain stopped block managers.")
-
-    // Make sure all locks have been released.
-    eventually(timeout(1000 milliseconds), interval(10 milliseconds)) {
-      initialStores.filter(bm => newLocations.contains(bm.blockManagerId)).foreach { bm =>
-        assert(bm.blockInfoManager.getTaskLockCount(BlockInfo.NON_TASK_WRITER) === 0)
-      }
-    }
-  }
-}
+//class BlockManagerProactiveReplicationSuite extends BlockManagerReplicationBehavior {
+//  val conf = new SparkConf(false).set("spark.app.id", "test")
+//  conf.set("spark.kryoserializer.buffer", "1m")
+//  conf.set("spark.storage.replication.proactive", "true")
+//  conf.set("spark.storage.exceptionOnPinLeak", "true")
+//
+//  (2 to 5).foreach { i =>
+//    test(s"proactive block replication - $i replicas - ${i - 1} block manager deletions") {
+//      testProactiveReplication(i)
+//    }
+//  }
+//
+//  def testProactiveReplication(replicationFactor: Int) {
+//    val blockSize = 1000
+//    val storeSize = 10000
+//    val initialStores = (1 to 10).map { i => makeBlockManager(storeSize, s"store$i") }
+//
+//    val blockId = "a1"
+//
+//    val storageLevel = StorageLevel(true, true, false, true, replicationFactor)
+//    initialStores.head.putSingle(blockId, new Array[Byte](blockSize), storageLevel)
+//
+//    val blockLocations = master.getLocations(blockId)
+//    logInfo(s"Initial locations : $blockLocations")
+//
+//    assert(blockLocations.size === replicationFactor)
+//
+//    // remove a random blockManager
+//    val executorsToRemove = blockLocations.take(replicationFactor - 1).toSet
+//    logInfo(s"Removing $executorsToRemove")
+//    initialStores.filter(bm => executorsToRemove.contains(bm.blockManagerId)).foreach { bm =>
+//      master.removeExecutor(bm.blockManagerId.executorId)
+//      bm.stop()
+//      // giving enough time for replication to happen and new block be reported to master
+//      eventually(timeout(5 seconds), interval(100 millis)) {
+//        val newLocations = master.getLocations(blockId).toSet
+//        assert(newLocations.size === replicationFactor)
+//      }
+//    }
+//
+//    val newLocations = eventually(timeout(5 seconds), interval(100 millis)) {
+//      val _newLocations = master.getLocations(blockId).toSet
+//      assert(_newLocations.size === replicationFactor)
+//      _newLocations
+//    }
+//    logInfo(s"New locations : $newLocations")
+//
+//    // new locations should not contain stopped block managers
+//    assert(newLocations.forall(bmId => !executorsToRemove.contains(bmId)),
+//      "New locations contain stopped block managers.")
+//
+//    // Make sure all locks have been released.
+//    eventually(timeout(1000 milliseconds), interval(10 milliseconds)) {
+//      initialStores.filter(bm => newLocations.contains(bm.blockManagerId)).foreach { bm =>
+//        assert(bm.blockInfoManager.getTaskLockCount(BlockInfo.NON_TASK_WRITER) === 0)
+//      }
+//    }
+//  }
+//}
 
 class DummyTopologyMapper(conf: SparkConf) extends TopologyMapper(conf) with Logging {
   // number of racks to test with
