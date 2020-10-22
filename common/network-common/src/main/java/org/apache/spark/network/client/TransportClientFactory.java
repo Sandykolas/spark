@@ -98,7 +98,6 @@ public class TransportClientFactory implements Closeable {
     this.connectionPool = new ConcurrentHashMap<>();
     this.numConnectionsPerPeer = conf.numConnectionsPerPeer();
     this.rand = new Random();
-
     IOMode ioMode = IOMode.valueOf(conf.ioMode());
     this.socketChannelClass = NettyUtils.getClientChannelClass(ioMode);
     this.workerGroup = NettyUtils.createEventLoop(
@@ -187,7 +186,8 @@ public class TransportClientFactory implements Closeable {
           logger.info("Found inactive connection to {}, creating a new one.", resolvedAddress);
         }
       }
-      if (fastFail && System.currentTimeMillis() - clientPool.lastConnectionFailed < fastFailTimeWindow) {
+      if (fastFail && System.currentTimeMillis() - clientPool.lastConnectionFailed
+              < fastFailTimeWindow) {
         throw new IOException(
           String.format("Connecting to %s failed in the last %s ms, fail this connection directly",
             resolvedAddress, fastFailTimeWindow));
