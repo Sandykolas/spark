@@ -166,6 +166,7 @@ class InMemoryCatalog(
     catalog.contains(db)
   }
 
+
   override def listDatabases(): Seq[String] = synchronized {
     catalog.keySet.toSeq.sorted
   }
