@@ -421,7 +421,7 @@ class BlockManagerReplicationSuite extends BlockManagerReplicationBehavior {
   conf.set("spark.kryoserializer.buffer", "1m")
 }
 
-//class BlockManagerProactiveReplicationSuite extends BlockManagerReplicationBehavior {
+//  class BlockManagerProactiveReplicationSuite extends BlockManagerReplicationBehavior {
 //  val conf = new SparkConf(false).set("spark.app.id", "test")
 //  conf.set("spark.kryoserializer.buffer", "1m")
 //  conf.set("spark.storage.replication.proactive", "true")
@@ -479,7 +479,7 @@ class BlockManagerReplicationSuite extends BlockManagerReplicationBehavior {
 //      }
 //    }
 //  }
-//}
+// }
 
 class DummyTopologyMapper(conf: SparkConf) extends TopologyMapper(conf) with Logging {
   // number of racks to test with
