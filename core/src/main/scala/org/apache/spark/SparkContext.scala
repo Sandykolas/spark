@@ -447,8 +447,7 @@ class SparkContext(config: SparkConf) extends Logging {
         // For tests, do not enable the UI
         None
       }
-    // Bind the UI before starting the task scheduler to communicate
-    // the bound port to the cluster manager properly
+    // Bind the UI before starting the task scheduler to communicate the bound port
     _ui.foreach { ui =>
       try {
         ui.bind()
