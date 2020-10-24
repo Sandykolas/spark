@@ -326,33 +326,4 @@ class CliSuite extends SparkFunSuite with BeforeAndAfterAll with Logging {
         -> ""
     )
   }
-
-  test("NESPARK-179: Test the sql statement whose semicolon in single quotes or double quotes") {
-    val cmd1 = "select * from table_a where columna not like '%;'"
-    val cmd2 = "select * from table_a where columna not like \"%;\""
-    assert(SparkSQLCLIDriver.splitSemiColon(cmd1) == cmd1)
-    assert(SparkSQLCLIDriver.splitSemiColon(cmd1 + ";") == cmd1)
-    assert(SparkSQLCLIDriver.splitSemiColon(cmd2) == cmd2)
-    assert(SparkSQLCLIDriver.splitSemiColon(cmd2 + ";") == cmd2)
-
-    val dataFilePath =
-      Thread.currentThread().getContextClassLoader.getResource("data/files/small_kv.txt")
-
-    runCliWithin(3.minute)(
-      "CREATE TABLE split_semicolon_test(key INT, val STRING);"
-        -> "",
-      "SHOW TABLES;"
-        -> "split_semicolon_test",
-      s"LOAD DATA LOCAL INPATH '$dataFilePath' OVERWRITE INTO TABLE split_semicolon_test;"
-        -> "",
-      "CACHE TABLE split_semicolon_test;"
-        -> "",
-      "SELECT COUNT(*) FROM split_semicolon_test where key not like '%;';"
-        -> "5",
-      "SELECT COUNT(*) FROM split_semicolon_test where key not like \"%;\";"
-        -> "5",
-      "DROP TABLE split_semicolon_test;"
-        -> ""
-    )
-  }
 }
