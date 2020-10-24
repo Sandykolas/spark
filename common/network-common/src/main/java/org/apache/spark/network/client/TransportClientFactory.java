@@ -70,7 +70,6 @@ public class TransportClientFactory implements Closeable {
         locks[i] = new Object();
       }
     }
-//    lastConnectionFailed = 0;
   }
 
   private static final Logger logger = LoggerFactory.getLogger(TransportClientFactory.class);
@@ -188,9 +187,7 @@ public class TransportClientFactory implements Closeable {
           logger.info("Found inactive connection to {}, creating a new one.", resolvedAddress);
         }
       }
-      //clientPool.clients[clientIndex] = createClient(resolvedAddress);
-        // If this connection should fast fail when last connection failed in last fast fail time
-      // window and it did, fail this connection directly.
+
       if (fastFail && System.currentTimeMillis() - clientPool.lastConnectionFailed <
         fastFailTimeWindow) {
         throw new IOException(
