@@ -570,6 +570,7 @@ package object config {
     .bytesConf(ByteUnit.BYTE)
     .createWithDefaultString("1g")
 
+
   private[spark] val CREDENTIALS_RENEWAL_INTERVAL_RATIO =
     ConfigBuilder("spark.security.credentials.renewalRatio")
       .doc("Ratio of the credential's expiration time when Spark should fetch new credentials.")
