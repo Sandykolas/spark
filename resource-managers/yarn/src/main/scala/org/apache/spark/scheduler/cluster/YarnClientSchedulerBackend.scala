@@ -14,7 +14,6 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-// have been repair by spark offical
 package org.apache.spark.scheduler.cluster
 
 import scala.collection.mutable.ArrayBuffer
@@ -22,17 +21,19 @@ import scala.collection.mutable.ArrayBuffer
 import org.apache.hadoop.yarn.api.records.YarnApplicationState
 
 import org.apache.spark.{SparkContext, SparkException}
-import org.apache.spark.deploy.yarn.{Client, ClientArguments}
+import org.apache.spark.deploy.yarn.{Client, ClientArguments,YarnAppReport}
 import org.apache.spark.deploy.yarn.config._
-import org.apache.spark.internal.Logging
+import org.apache.spark.internal.{config,Logging}
 import org.apache.spark.launcher.SparkAppHandle
 import org.apache.spark.scheduler.TaskSchedulerImpl
+import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages.
 
 private[spark] class YarnClientSchedulerBackend(
     scheduler: TaskSchedulerImpl,
     sc: SparkContext)
   extends YarnSchedulerBackend(scheduler, sc)
   with Logging {
+
   private var client: Client = null
   private var monitorThread: MonitorThread = null
   /**
@@ -62,6 +63,7 @@ private[spark] class YarnClientSchedulerBackend(
 
     monitorThread = asyncMonitorApplication()
     monitorThread.start()
+
   }
 
   /**
@@ -85,7 +87,6 @@ private[spark] class YarnClientSchedulerBackend(
         case Some(msg) =>
           logError(genericMessage)
           msg
-
         case None =>
           genericMessage
       }
