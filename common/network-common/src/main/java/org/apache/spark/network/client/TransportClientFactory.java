@@ -187,7 +187,7 @@ public class TransportClientFactory implements Closeable {
         }
       }
       if (fastFail && System.currentTimeMillis() - clientPool.lastConnectionFailed
-              < fastFailTimeWindow) {
+	< fastFailTimeWindow) {
         throw new IOException(
           String.format("Connecting to %s failed in the last %s ms, fail this connection directly",
             resolvedAddress, fastFailTimeWindow));
@@ -208,8 +208,6 @@ public class TransportClientFactory implements Closeable {
     throws IOException, InterruptedException {
       return createClient(remoteHost, remotePort, false);
   }
-
-
   /**
    * Create a completely new {@link TransportClient} to the given remote host / port.
    * This connection is not pooled.

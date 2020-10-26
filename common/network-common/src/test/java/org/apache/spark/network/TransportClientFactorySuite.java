@@ -41,6 +41,7 @@ import org.apache.spark.network.util.ConfigProvider;
 import org.apache.spark.network.util.MapConfigProvider;
 import org.apache.spark.network.util.JavaUtils;
 import org.apache.spark.network.util.TransportConf;
+
 import org.junit.rules.ExpectedException;
 
 public class TransportClientFactorySuite {
