@@ -23,7 +23,7 @@ import org.apache.hadoop.yarn.api.records.YarnApplicationState
 import org.apache.spark.{SparkContext, SparkException}
 import org.apache.spark.deploy.yarn.{Client, ClientArguments, YarnAppReport}
 import org.apache.spark.deploy.yarn.config._
-import org.apache.spark.internal.{config,Logging}
+import org.apache.spark.internal.{config, Logging}
 import org.apache.spark.launcher.SparkAppHandle
 import org.apache.spark.scheduler.TaskSchedulerImpl
 import org.apache.spark.scheduler.cluster.CoarseGrainedClusterMessages._
