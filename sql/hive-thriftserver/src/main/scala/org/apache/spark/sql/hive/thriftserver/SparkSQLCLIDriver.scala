@@ -57,9 +57,7 @@ private[hive] object SparkSQLCLIDriver extends Logging {
   private val continuedPrompt = "".padTo(prompt.length, ' ')
   private var transport: TSocket = _
   private final val SPARK_HADOOP_PROP_PREFIX = "spark.hadoop."
-
   installSignalHandler()
-
   /**
    * Install an interrupt callback to cancel all Spark jobs. In Hive's CliDriver#processLine(),
    * a signal handler will invoke this registered callback if a Ctrl+C signal is detected while
@@ -289,13 +287,10 @@ private[hive] object SparkSQLCLIDriver extends Logging {
     System.exit(ret)
   }
 
-
   def isRemoteMode(state: CliSessionState): Boolean = {
     //    sessionState.isRemoteMode
     state.isHiveServerQuery
   }
-
-}
 
   def splitSemiColon(line: String): ListBuffer[String] = {
     var inQuotes = false
