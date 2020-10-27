@@ -187,7 +187,7 @@ public class TransportClientFactory implements Closeable {
         }
       }
       if (fastFail && System.currentTimeMillis() - clientPool.lastConnectionFailed
-	< fastFailTimeWindow) {
+        < fastFailTimeWindow) {
         throw new IOException(
           String.format("Connecting to %s failed in the last %s ms, fail this connection directly",
             resolvedAddress, fastFailTimeWindow));

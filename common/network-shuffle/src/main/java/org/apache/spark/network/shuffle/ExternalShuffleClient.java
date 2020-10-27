@@ -100,7 +100,7 @@ public class ExternalShuffleClient extends ShuffleClient {
           (blockIds1, listener1) -> {
          TransportClient client = clientFactory.createClient(host, port, maxRetries > 0);
          new OneForOneBlockFetcher(client, appId, execId,
-	  blockIds1, listener1, conf, downloadFileManager).start();
+           blockIds1, listener1, conf, downloadFileManager).start();
           };
 
       if (maxRetries > 0) {
