@@ -487,7 +487,6 @@ class DummyTopologyMapper(conf: SparkConf) extends TopologyMapper(conf) with Log
 
   /**
    * Gets the topology information given the host name
-   *
    * @param hostname Hostname
    * @return random topology
    */
