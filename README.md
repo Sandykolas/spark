@@ -10,7 +10,7 @@ and Spark Streaming for stream processing.
 <http://spark.apache.org/>
 
 
-##  Online Documentation
+## Online Documentation
 
 You can find the latest Spark documentation, including a programming
 guide, on the [project web page](http://spark.apache.org/documentation.html).
