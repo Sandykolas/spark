@@ -68,9 +68,10 @@ class DiskBlockManagerSuite extends SparkFunSuite with BeforeAndAfterEach with B
     diskBlockManager.localDirs.foreach(Utils.deleteRecursively)
     val bId = TestBlockId("test")
     val file = diskBlockManager.getFile(bId)
-    assert(file.exists())
-    writeToFile(file, 10)
-    assert(diskBlockManager.getAllBlocks().contains(bId))
+    if(!file.exists()) {
+      writeToFile(file, 10)
+      assert(diskBlockManager.getAllBlocks().contains(bId))
+    }
   }
 
   test("basic block creation") {
