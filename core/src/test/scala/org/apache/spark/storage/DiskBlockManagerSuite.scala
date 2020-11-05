@@ -63,7 +63,7 @@ class DiskBlockManagerSuite extends SparkFunSuite with BeforeAndAfterEach with B
       super.afterEach()
     }
   }
-  
+
   test("recreate local dirs if manually deleted") {
     diskBlockManager.localDirs.foreach(Utils.deleteRecursively)
     val bId = TestBlockId("test")
